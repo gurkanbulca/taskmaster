@@ -1,0 +1,148 @@
+// api/proto/auth/v1/auth.proto
+syntax = "proto3";
+
+package auth.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/gurkanbulca/taskmaster/api/proto/auth/v1/generated;authv1";
+
+// Authentication service
+service AuthService {
+  // Register a new user
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Login with email and password
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // Refresh access token
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+
+  // Logout and invalidate tokens
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
+
+  // Get current user info
+  rpc GetMe(google.protobuf.Empty) returns (GetMeResponse);
+
+  // Update current user profile
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // Change password
+  rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty);
+
+  // Verify email
+  rpc VerifyEmail(VerifyEmailRequest) returns (google.protobuf.Empty);
+
+  // Request password reset
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (google.protobuf.Empty);
+
+  // Reset password with token
+  rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty);
+}
+
+// User message
+message User {
+  string id = 1;
+  string email = 2;
+  string username = 3;
+  string first_name = 4;
+  string last_name = 5;
+  UserRole role = 6;
+  bool is_active = 7;
+  bool email_verified = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  google.protobuf.Timestamp last_login = 11;
+}
+
+// User roles
+enum UserRole {
+  USER_ROLE_UNSPECIFIED = 0;
+  USER_ROLE_USER = 1;
+  USER_ROLE_MANAGER = 2;
+  USER_ROLE_ADMIN = 3;
+}
+
+// Register request
+message RegisterRequest {
+  string email = 1;
+  string username = 2;
+  string password = 3;
+  string first_name = 4;
+  string last_name = 5;
+}
+
+message RegisterResponse {
+  User user = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  int64 expires_in = 4; // seconds
+}
+
+// Login request
+message LoginRequest {
+  string email = 1;     // Can be email or username
+  string password = 2;
+}
+
+message LoginResponse {
+  User user = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  int64 expires_in = 4; // seconds
+}
+
+// Refresh token request
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;
+}
+
+// Logout request
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+// Get current user response
+message GetMeResponse {
+  User user = 1;
+}
+
+// Update profile request
+message UpdateProfileRequest {
+  string first_name = 1;
+  string last_name = 2;
+  map<string, string> preferences = 3;
+}
+
+message UpdateProfileResponse {
+  User user = 1;
+}
+
+// Change password request
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+}
+
+// Verify email request
+message VerifyEmailRequest {
+  string token = 1;
+}
+
+// Request password reset
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+// Reset password request
+message ResetPasswordRequest {
+  string token = 1;
+  string new_password = 2;
+}

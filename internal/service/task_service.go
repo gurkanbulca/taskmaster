@@ -1,4 +1,4 @@
-// internal/service/task_service_ent.go
+// internal/service/task_service.go
 package service
 
 import (
@@ -14,6 +14,7 @@ import (
 
 	taskv1 "github.com/gurkanbulca/taskmaster/api/proto/task/v1/generated"
 	ent "github.com/gurkanbulca/taskmaster/ent/generated"
+	"github.com/gurkanbulca/taskmaster/internal/middleware"
 	"github.com/gurkanbulca/taskmaster/internal/repository"
 )
 
@@ -30,6 +31,12 @@ func NewTaskService(repo *repository.EntTaskRepository) *TaskService {
 
 // CreateTask creates a new task
 func (s *TaskService) CreateTask(ctx context.Context, req *taskv1.CreateTaskRequest) (*taskv1.CreateTaskResponse, error) {
+	// Get user ID from context (set by auth middleware)
+	userID, ok := middleware.GetUserIDFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+
 	// Validate request
 	if req.Title == "" {
 		return nil, status.Error(codes.InvalidArgument, "title is required")
@@ -41,12 +48,25 @@ func (s *TaskService) CreateTask(ctx context.Context, req *taskv1.CreateTaskRequ
 		Description: req.Description,
 		Status:      "pending",
 		Priority:    convertPriorityToString(req.Priority),
-		Tags:        req.Tags,
-		Metadata:    make(map[string]interface{}),
+		CreatorID:   userID, // Set the creator
 	}
+
+	// Handle tags - ensure not nil
+	if req.Tags != nil && len(req.Tags) > 0 {
+		input.Tags = req.Tags
+	} else {
+		input.Tags = []string{}
+	}
+
+	// Initialize metadata
+	input.Metadata = make(map[string]interface{})
 
 	if req.AssignedTo != "" {
 		input.AssignedTo = &req.AssignedTo
+		// If assigned_to looks like a UUID, set it as assignee
+		if _, err := uuid.Parse(req.AssignedTo); err == nil {
+			input.AssigneeID = req.AssignedTo
+		}
 	}
 
 	if req.DueDate != nil {
@@ -54,8 +74,8 @@ func (s *TaskService) CreateTask(ctx context.Context, req *taskv1.CreateTaskRequ
 		input.DueDate = &dueDate
 	}
 
-	// Create task
-	task, err := s.repo.Create(ctx, input)
+	// Create task with creator
+	task, err := s.repo.CreateWithCreator(ctx, input, userID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create task: %v", err)
 	}
@@ -67,6 +87,10 @@ func (s *TaskService) CreateTask(ctx context.Context, req *taskv1.CreateTaskRequ
 
 // GetTask retrieves a task by ID
 func (s *TaskService) GetTask(ctx context.Context, req *taskv1.GetTaskRequest) (*taskv1.GetTaskResponse, error) {
+	// Get user info from context
+	userID, _ := middleware.GetUserIDFromContext(ctx)
+	userRole, _ := middleware.GetUserRoleFromContext(ctx)
+
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -77,13 +101,28 @@ func (s *TaskService) GetTask(ctx context.Context, req *taskv1.GetTaskRequest) (
 		return nil, status.Error(codes.InvalidArgument, "invalid task ID format")
 	}
 
-	// Get task
-	task, err := s.repo.GetByID(ctx, id)
+	// Get task with relations
+	task, err := s.repo.GetByIDWithCreator(ctx, id)
 	if err != nil {
 		if ent.IsNotFound(err) {
 			return nil, status.Error(codes.NotFound, "task not found")
 		}
 		return nil, status.Errorf(codes.Internal, "failed to get task: %v", err)
+	}
+
+	// Check permissions: admin can see all, others can only see their own or assigned tasks
+	if userRole != "admin" {
+		canView := false
+		if task.Edges.Creator != nil && task.Edges.Creator.ID.String() == userID {
+			canView = true
+		}
+		if task.Edges.Assignee != nil && task.Edges.Assignee.ID.String() == userID {
+			canView = true
+		}
+
+		if !canView {
+			return nil, status.Error(codes.PermissionDenied, "you don't have permission to view this task")
+		}
 	}
 
 	return &taskv1.GetTaskResponse{
@@ -93,6 +132,10 @@ func (s *TaskService) GetTask(ctx context.Context, req *taskv1.GetTaskRequest) (
 
 // ListTasks retrieves a list of tasks
 func (s *TaskService) ListTasks(ctx context.Context, req *taskv1.ListTasksRequest) (*taskv1.ListTasksResponse, error) {
+	// Get user info from context
+	userID, _ := middleware.GetUserIDFromContext(ctx)
+	userRole, _ := middleware.GetUserRoleFromContext(ctx)
+
 	// Set default page size
 	pageSize := req.PageSize
 	if pageSize <= 0 {
@@ -104,8 +147,14 @@ func (s *TaskService) ListTasks(ctx context.Context, req *taskv1.ListTasksReques
 
 	// Build filter
 	filter := repository.ListFilter{
-		Limit:  int(pageSize),
-		Offset: 0, // Calculate from page token if needed
+		Limit:         int(pageSize),
+		Offset:        0,
+		WithRelations: true, // Include creator and assignee info
+	}
+
+	// If not admin, only show user's tasks (created or assigned)
+	if userRole != "admin" && userRole != "manager" {
+		filter.UserID = &userID
 	}
 
 	if req.Status != taskv1.TaskStatus_TASK_STATUS_UNSPECIFIED {
@@ -132,13 +181,17 @@ func (s *TaskService) ListTasks(ctx context.Context, req *taskv1.ListTasksReques
 
 	return &taskv1.ListTasksResponse{
 		Tasks:         protoTasks,
-		NextPageToken: "", // Implement pagination token logic
+		NextPageToken: "",
 		TotalCount:    int32(totalCount),
 	}, nil
 }
 
 // UpdateTask updates an existing task
 func (s *TaskService) UpdateTask(ctx context.Context, req *taskv1.UpdateTaskRequest) (*taskv1.UpdateTaskResponse, error) {
+	// Get user info from context
+	userID, _ := middleware.GetUserIDFromContext(ctx)
+	userRole, _ := middleware.GetUserRoleFromContext(ctx)
+
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -147,6 +200,28 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *taskv1.UpdateTaskRequ
 	id, err := uuid.Parse(req.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid task ID format")
+	}
+
+	// Get existing task with relations
+	existingTask, err := s.repo.GetByIDWithCreator(ctx, id)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, status.Error(codes.NotFound, "task not found")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get task: %v", err)
+	}
+
+	// Check permissions
+	canUpdate := userRole == "admin" || userRole == "manager"
+	if !canUpdate && existingTask.Edges.Creator != nil && existingTask.Edges.Creator.ID.String() == userID {
+		canUpdate = true
+	}
+	if !canUpdate && existingTask.Edges.Assignee != nil && existingTask.Edges.Assignee.ID.String() == userID {
+		canUpdate = true
+	}
+
+	if !canUpdate {
+		return nil, status.Error(codes.PermissionDenied, "you don't have permission to update this task")
 	}
 
 	// Build update input
@@ -168,6 +243,10 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *taskv1.UpdateTaskRequ
 	}
 	if req.AssignedTo != "" {
 		input.AssignedTo = &req.AssignedTo
+		// If assigned_to looks like a UUID, set it as assignee
+		if _, err := uuid.Parse(req.AssignedTo); err == nil {
+			input.AssigneeID = &req.AssignedTo
+		}
 	}
 	if req.DueDate != nil {
 		dueDate := req.DueDate.AsTime()
@@ -193,6 +272,10 @@ func (s *TaskService) UpdateTask(ctx context.Context, req *taskv1.UpdateTaskRequ
 
 // DeleteTask deletes a task
 func (s *TaskService) DeleteTask(ctx context.Context, req *taskv1.DeleteTaskRequest) (*emptypb.Empty, error) {
+	// Get user info from context
+	userID, _ := middleware.GetUserIDFromContext(ctx)
+	userRole, _ := middleware.GetUserRoleFromContext(ctx)
+
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
@@ -201,6 +284,25 @@ func (s *TaskService) DeleteTask(ctx context.Context, req *taskv1.DeleteTaskRequ
 	id, err := uuid.Parse(req.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid task ID format")
+	}
+
+	// Get existing task with relations
+	existingTask, err := s.repo.GetByIDWithCreator(ctx, id)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, status.Error(codes.NotFound, "task not found")
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get task: %v", err)
+	}
+
+	// Check permissions: only creator or admin can delete
+	canDelete := userRole == "admin"
+	if !canDelete && existingTask.Edges.Creator != nil && existingTask.Edges.Creator.ID.String() == userID {
+		canDelete = true
+	}
+
+	if !canDelete {
+		return nil, status.Error(codes.PermissionDenied, "you don't have permission to delete this task")
 	}
 
 	// Delete task

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"entgo.io/ent"
-	"entgo.io/ent/dialect"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
@@ -30,6 +29,7 @@ func (Task) Fields() []ent.Field {
 
 		field.Text("description").
 			Optional().
+			Default("").
 			Comment("Detailed description of the task"),
 
 		field.Enum("status").
@@ -53,9 +53,7 @@ func (Task) Fields() []ent.Field {
 
 		field.JSON("tags", []string{}).
 			Optional().
-			SchemaType(map[string]string{
-				dialect.Postgres: "text[]",
-			}).
+			Default([]string{}).
 			Comment("Tags for categorizing the task"),
 
 		field.JSON("metadata", map[string]interface{}{}).
@@ -78,18 +76,23 @@ func (Task) Fields() []ent.Field {
 // Edges of the Task.
 func (Task) Edges() []ent.Edge {
 	return []ent.Edge{
-		// Add this when you create User schema
-		// edge.From("creator", User.Type).
-		//     Ref("tasks").
-		//     Unique(),
+		// Task creator - many tasks to one user
+		edge.From("creator", User.Type).
+			Ref("created_tasks").
+			Unique().
+			Comment("User who created this task"),
+
+		// Task assignee - many tasks to one user
+		edge.From("assignee", User.Type).
+			Ref("assigned_tasks").
+			Unique().
+			Comment("User assigned to this task"),
 
 		// Self-referencing edge for subtasks
 		edge.To("subtasks", Task.Type).
 			From("parent").
-			Unique(),
-
-		// Comments edge (when you add Comment schema)
-		// edge.To("comments", Comment.Type),
+			Unique().
+			Comment("Subtasks of this task"),
 	}
 }
 
@@ -110,5 +113,8 @@ func (Task) Indexes() []ent.Index {
 
 		// Index on created_at for sorting
 		index.Fields("created_at"),
+
+		// Index on due_date for deadline queries
+		index.Fields("due_date"),
 	}
 }

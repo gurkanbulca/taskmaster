@@ -12,6 +12,7 @@ import (
 	ent "github.com/gurkanbulca/taskmaster/ent/generated"
 	"github.com/gurkanbulca/taskmaster/ent/generated/predicate"
 	"github.com/gurkanbulca/taskmaster/ent/generated/task"
+	"github.com/gurkanbulca/taskmaster/ent/generated/user"
 )
 
 type EntTaskRepository struct {
@@ -25,7 +26,57 @@ func NewEntTaskRepository(client *ent.Client) *EntTaskRepository {
 }
 
 func (r *EntTaskRepository) Create(ctx context.Context, t *TaskInput) (*ent.Task, error) {
-	return r.client.Task.
+	create := r.client.Task.
+		Create().
+		SetTitle(t.Title).
+		SetDescription(t.Description).
+		SetStatus(task.Status(t.Status)).
+		SetPriority(task.Priority(t.Priority)).
+		SetNillableAssignedTo(t.AssignedTo).
+		SetNillableDueDate(t.DueDate)
+
+	// Handle tags - ensure it's not nil
+	if t.Tags != nil && len(t.Tags) > 0 {
+		create = create.SetTags(t.Tags)
+	} else {
+		create = create.SetTags([]string{}) // Set empty array instead of nil
+	}
+
+	// Handle metadata
+	if t.Metadata != nil {
+		create = create.SetMetadata(t.Metadata)
+	} else {
+		create = create.SetMetadata(map[string]interface{}{})
+	}
+
+	// Set creator if provided
+	if t.CreatorID != "" {
+		creatorUUID, err := uuid.Parse(t.CreatorID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid creator ID: %w", err)
+		}
+		create = create.SetCreatorID(creatorUUID)
+	}
+
+	// Set assignee if provided
+	if t.AssigneeID != "" {
+		assigneeUUID, err := uuid.Parse(t.AssigneeID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid assignee ID: %w", err)
+		}
+		create = create.SetAssigneeID(assigneeUUID)
+	}
+
+	return create.Save(ctx)
+}
+
+func (r *EntTaskRepository) CreateWithCreator(ctx context.Context, t *TaskInput, creatorID string) (*ent.Task, error) {
+	creatorUUID, err := uuid.Parse(creatorID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid creator ID: %w", err)
+	}
+
+	create := r.client.Task.
 		Create().
 		SetTitle(t.Title).
 		SetDescription(t.Description).
@@ -33,15 +84,47 @@ func (r *EntTaskRepository) Create(ctx context.Context, t *TaskInput) (*ent.Task
 		SetPriority(task.Priority(t.Priority)).
 		SetNillableAssignedTo(t.AssignedTo).
 		SetNillableDueDate(t.DueDate).
-		SetTags(t.Tags).
-		SetMetadata(t.Metadata).
-		Save(ctx)
+		SetCreatorID(creatorUUID)
+
+	// Handle tags - ensure it's not nil
+	if t.Tags != nil && len(t.Tags) > 0 {
+		create = create.SetTags(t.Tags)
+	} else {
+		create = create.SetTags([]string{}) // Set empty array instead of nil
+	}
+
+	// Handle metadata
+	if t.Metadata != nil {
+		create = create.SetMetadata(t.Metadata)
+	} else {
+		create = create.SetMetadata(map[string]interface{}{})
+	}
+
+	// Set assignee if provided
+	if t.AssigneeID != "" {
+		assigneeUUID, err := uuid.Parse(t.AssigneeID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid assignee ID: %w", err)
+		}
+		create = create.SetAssigneeID(assigneeUUID)
+	}
+
+	return create.Save(ctx)
 }
 
 func (r *EntTaskRepository) GetByID(ctx context.Context, id uuid.UUID) (*ent.Task, error) {
 	return r.client.Task.
 		Query().
 		Where(task.ID(id)).
+		Only(ctx)
+}
+
+func (r *EntTaskRepository) GetByIDWithCreator(ctx context.Context, id uuid.UUID) (*ent.Task, error) {
+	return r.client.Task.
+		Query().
+		Where(task.ID(id)).
+		WithCreator().
+		WithAssignee().
 		Only(ctx)
 }
 
@@ -63,11 +146,27 @@ func (r *EntTaskRepository) List(ctx context.Context, filter ListFilter) ([]*ent
 		predicates = append(predicates, task.AssignedToEQ(*filter.AssignedTo))
 	}
 
-	// Note: Tags filtering is complex with JSON fields
-	// For now, we'll skip tags filtering or implement it later with raw SQL
-	// if len(filter.Tags) > 0 {
-	//     // TODO: Implement tags filtering
-	// }
+	// Filter by user ID (either creator or assignee)
+	if filter.UserID != nil {
+		userUUID, err := uuid.Parse(*filter.UserID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("invalid user ID: %w", err)
+		}
+
+		predicates = append(predicates, task.Or(
+			task.HasCreatorWith(user.ID(userUUID)),
+			task.HasAssigneeWith(user.ID(userUUID)),
+		))
+	}
+
+	// Filter by creator ID specifically
+	if filter.CreatorID != nil {
+		creatorUUID, err := uuid.Parse(*filter.CreatorID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("invalid creator ID: %w", err)
+		}
+		predicates = append(predicates, task.HasCreatorWith(user.ID(creatorUUID)))
+	}
 
 	if filter.Search != "" {
 		// Search in title and description
@@ -127,6 +226,11 @@ func (r *EntTaskRepository) List(ctx context.Context, filter ListFilter) ([]*ent
 		query = query.Offset(filter.Offset)
 	}
 
+	// Include creator and assignee information
+	if filter.WithRelations {
+		query = query.WithCreator().WithAssignee()
+	}
+
 	// Execute query
 	tasks, err := query.All(ctx)
 	if err != nil {
@@ -153,9 +257,13 @@ func (r *EntTaskRepository) Update(ctx context.Context, id uuid.UUID, input *Tas
 	}
 	if input.AssignedTo != nil {
 		if *input.AssignedTo == "" {
-			update = update.ClearAssignedTo()
+			update = update.ClearAssignedTo().ClearAssignee()
 		} else {
 			update = update.SetAssignedTo(*input.AssignedTo)
+			// Optionally set assignee relation if it's a valid user ID
+			if assigneeUUID, err := uuid.Parse(*input.AssignedTo); err == nil {
+				update = update.SetAssigneeID(assigneeUUID)
+			}
 		}
 	}
 	if input.DueDate != nil {
@@ -178,11 +286,16 @@ func (r *EntTaskRepository) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // Batch operations
-func (r *EntTaskRepository) CreateBatch(ctx context.Context, inputs []*TaskInput) ([]*ent.Task, error) {
+func (r *EntTaskRepository) CreateBatch(ctx context.Context, inputs []*TaskInput, creatorID string) ([]*ent.Task, error) {
+	creatorUUID, err := uuid.Parse(creatorID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid creator ID: %w", err)
+	}
+
 	builders := make([]*ent.TaskCreate, len(inputs))
 
 	for i, input := range inputs {
-		builders[i] = r.client.Task.
+		builder := r.client.Task.
 			Create().
 			SetTitle(input.Title).
 			SetDescription(input.Description).
@@ -191,7 +304,16 @@ func (r *EntTaskRepository) CreateBatch(ctx context.Context, inputs []*TaskInput
 			SetNillableAssignedTo(input.AssignedTo).
 			SetNillableDueDate(input.DueDate).
 			SetTags(input.Tags).
-			SetMetadata(input.Metadata)
+			SetMetadata(input.Metadata).
+			SetCreatorID(creatorUUID)
+
+		if input.AssigneeID != "" {
+			if assigneeUUID, err := uuid.Parse(input.AssigneeID); err == nil {
+				builder = builder.SetAssigneeID(assigneeUUID)
+			}
+		}
+
+		builders[i] = builder
 	}
 
 	return r.client.Task.CreateBulk(builders...).Save(ctx)
@@ -228,6 +350,8 @@ type TaskInput struct {
 	Status      string
 	Priority    string
 	AssignedTo  *string
+	AssigneeID  string // User ID for assignee relation
+	CreatorID   string // User ID for creator relation
 	DueDate     *time.Time
 	Tags        []string
 	Metadata    map[string]interface{}
@@ -239,19 +363,23 @@ type TaskUpdateInput struct {
 	Status      *string
 	Priority    *string
 	AssignedTo  *string
+	AssigneeID  *string // User ID for assignee relation
 	DueDate     *time.Time
 	Tags        []string
 	Metadata    map[string]interface{}
 }
 
 type ListFilter struct {
-	Status     *string
-	Priority   *string
-	AssignedTo *string
-	Tags       []string
-	Search     string
-	SortBy     string
-	SortOrder  string
-	Limit      int
-	Offset     int
+	Status        *string
+	Priority      *string
+	AssignedTo    *string
+	UserID        *string // Filter by user (either creator or assignee)
+	CreatorID     *string // Filter by creator specifically
+	Tags          []string
+	Search        string
+	SortBy        string
+	SortOrder     string
+	Limit         int
+	Offset        int
+	WithRelations bool // Include creator and assignee information
 }

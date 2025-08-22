@@ -228,7 +228,7 @@ go run cmd/client/main.go
 ## 🗄️ Database Schema (Ent)
 
 ### Task Entity
-```go
+```
 Fields:
 - ID (UUID, auto-generated)
 - Title (string, required)

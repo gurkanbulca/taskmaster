@@ -1,6 +1,6 @@
+//go:generate go run generate.go
+
 // ent/generate.go
-//go:build ignore
-// +build ignore
 
 package main
 
