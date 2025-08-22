@@ -8,6 +8,7 @@ A high-performance, scalable gRPC task management service built with Go, featuri
 - **Ent ORM** for type-safe database operations and automatic migrations
 - **PostgreSQL** database with connection pooling
 - **Clean Architecture** with repository pattern
+- **Generated Code Separation** - Clean distinction between source and generated files
 - **Hot Reload** development with Air
 - **Docker Compose** for local development
 - **Health Checks** and service reflection
@@ -19,17 +20,17 @@ A high-performance, scalable gRPC task management service built with Go, featuri
 - Go 1.21+
 - Protocol Buffers compiler (protoc)
 - Docker & Docker Compose
-- Windows/Linux/macOS
+- Git
 
 ## 🛠️ Quick Setup
 
-### 1. Clone and Navigate
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/gurkanbulca/taskmaster.git
 cd taskmaster
 ```
 
-### 2. Install Dependencies
+### 2. Install Required Tools
 
 #### Windows (PowerShell)
 ```powershell
@@ -39,8 +40,8 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/cosmtrek/air@latest
 
-# Run setup script
-.\setup-with-ent.ps1
+# Install protoc via Scoop
+scoop install protobuf
 ```
 
 #### Linux/macOS
@@ -51,23 +52,42 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 go install github.com/cosmtrek/air@latest
 
-# Run setup
-make setup
+# Install protoc
+# macOS
+brew install protobuf
+
+# Linux
+sudo apt install -y protobuf-compiler
 ```
 
-### 3. Configure Environment
+### 3. Generate Code
+**Important**: Generated code is not included in the repository. You must generate it after cloning.
+
+```bash
+# Windows
+.\generate.ps1
+
+# Linux/macOS
+chmod +x generate.sh
+./generate.sh
+```
+
+### 4. Configure Environment
 ```bash
 cp .env.example .env
-# Edit .env with your settings
+# Edit .env with your settings (optional, defaults work for local development)
 ```
 
-### 4. Start Services
+### 5. Start Services
 ```bash
-# Start PostgreSQL, Redis, Jaeger
+# Start PostgreSQL, Redis, and Jaeger
 docker-compose up -d
 
 # Run the server
 go run cmd/server/main.go
+
+# Or use hot reload
+air
 ```
 
 ## 🏗️ Project Structure
@@ -75,51 +95,64 @@ go run cmd/server/main.go
 ```
 taskmaster/
 ├── api/
-│   └── proto/          # Protocol buffer definitions
+│   └── proto/
 │       └── task/v1/
-│           └── task.proto
-├── cmd/
-│   ├── server/         # Main server application
-│   │   └── main.go
-│   ├── client/         # Test client
-│   │   └── main.go
-│   └── migrate/        # Migration tool
-│       └── main.go
+│           ├── task.proto          # ✅ Source (tracked in Git)
+│           └── generated/          # ❌ Generated (not in Git)
+│               ├── task.pb.go
+│               └── task_grpc.pb.go
 ├── ent/
-│   ├── schema/         # Ent schema definitions
-│   │   └── task.go
-│   └── ...            # Generated Ent code
+│   ├── schema/
+│   │   └── task.go                # ✅ Source (tracked in Git)
+│   ├── generate.go                # ✅ Source (tracked in Git)
+│   └── generated/                 # ❌ Generated (not in Git)
+│       ├── client.go
+│       ├── task.go
+│       └── ...
+├── cmd/
+│   ├── server/                    # Main server application
+│   ├── client/                    # Test client
+│   └── migrate/                   # Migration tool
 ├── internal/
-│   ├── config/         # Configuration management
-│   ├── database/       # Database connection
-│   ├── repository/     # Data access layer
-│   ├── service/        # Business logic
-│   └── middleware/     # gRPC interceptors
-├── pkg/                # Reusable packages
-├── scripts/            # Utility scripts
-├── deployments/        # Deployment configs
-│   ├── docker/
-│   └── k8s/
-├── .env.example        # Environment template
-├── docker-compose.yml  # Local development
+│   ├── config/                    # Configuration management
+│   ├── database/                  # Database connection
+│   ├── repository/                # Data access layer
+│   ├── service/                   # Business logic
+│   └── middleware/                # gRPC interceptors
+├── scripts/                       # Utility scripts
+├── deployments/                   # Deployment configs
+├── .env.example                   # Environment template
+├── .gitignore                     # Git ignore rules
+├── docker-compose.yml             # Local services
+├── generate.ps1                   # Windows code generation
+├── generate.sh                    # Linux/macOS code generation
 ├── go.mod
 └── README.md
 ```
+
+### Source vs Generated Files
+
+| Type | Location | In Git? | Description |
+|------|----------|---------|-------------|
+| **Source** | `ent/schema/*.go` | ✅ Yes | Ent schema definitions |
+| **Source** | `api/proto/**/*.proto` | ✅ Yes | Protocol buffer definitions |
+| **Source** | `internal/**/*.go` | ✅ Yes | Business logic |
+| **Generated** | `**/generated/` | ❌ No | All generated code |
+| **Generated** | `*.pb.go` | ❌ No | Protobuf Go code |
+| **Config** | `.env` | ❌ No | Local configuration |
+| **Config** | `.env.example` | ✅ Yes | Configuration template |
 
 ## 🔧 Development
 
 ### Essential Commands
 
 ```bash
-# Generate Ent code after schema changes
-go generate ./ent
+# Generate all code (Ent + Protobuf)
+# Windows
+.\generate.ps1
 
-# Generate protobuf code
-make proto
-# or
-protoc --go_out=. --go_opt=paths=source_relative \
-       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-       api/proto/task/v1/task.proto
+# Linux/macOS
+./generate.sh
 
 # Run with hot reload
 air
@@ -130,19 +163,28 @@ go test ./...
 # Build binary
 go build -o bin/server cmd/server/main.go
 
-# Run migrations manually
+# Run migrations (automatic on server start)
 go run cmd/migrate/main.go
+
+# Clean generated files
+# Windows
+Remove-Item -Recurse -Force ent/generated, api/proto/task/v1/generated
+
+# Linux/macOS
+rm -rf ent/generated api/proto/task/v1/generated
 ```
 
-### Windows Commands (PowerShell)
-```powershell
-# Use the build script
-.\build.ps1 help     # Show available commands
-.\build.ps1 proto    # Generate protobuf
-.\build.ps1 build    # Build binary
-.\build.ps1 run      # Run server
-.\build.ps1 test     # Run tests
-```
+### Modifying Schemas
+
+#### Update Ent Schema
+1. Edit `ent/schema/task.go`
+2. Run `.\generate.ps1` or `./generate.sh`
+3. Restart server (migrations run automatically)
+
+#### Update Proto Definitions
+1. Edit `api/proto/task/v1/task.proto`
+2. Run `.\generate.ps1` or `./generate.sh`
+3. Update service implementations if needed
 
 ## 📡 API Endpoints
 
@@ -187,35 +229,49 @@ go run cmd/client/main.go
 
 ### Task Entity
 ```go
-- ID (UUID)
+Fields:
+- ID (UUID, auto-generated)
 - Title (string, required)
-- Description (text)
+- Description (text, optional)
 - Status (enum: pending, in_progress, completed, cancelled)
 - Priority (enum: low, medium, high, critical)
 - AssignedTo (string, optional)
 - DueDate (timestamp, optional)
 - Tags ([]string)
 - Metadata (JSON)
-- CreatedAt (timestamp)
-- UpdatedAt (timestamp)
-```
+- CreatedAt (timestamp, auto)
+- UpdatedAt (timestamp, auto)
 
-### Modifying Schema
-1. Edit `ent/schema/task.go`
-2. Run `go generate ./ent`
-3. Restart server (auto-migrates)
+Indexes:
+- status
+- priority
+- assigned_to
+- status + priority (composite)
+- created_at
+```
 
 ## 🐳 Docker Services
 
 ```yaml
-# PostgreSQL - Database
-localhost:5432
+PostgreSQL: localhost:5432
+Redis:      localhost:6379 (ready for caching)
+Jaeger:     localhost:16686 (UI for tracing)
+```
 
-# Redis - Caching (ready for implementation)
-localhost:6379
+### Managing Services
+```bash
+# Start all services
+docker-compose up -d
 
-# Jaeger - Distributed tracing (ready for implementation)
-localhost:16686 (UI)
+# Stop all services
+docker-compose down
+
+# View logs
+docker-compose logs -f postgres
+
+# Reset database
+docker-compose down -v
+docker-compose up -d
 ```
 
 ## 🚀 Production Deployment
@@ -226,51 +282,44 @@ localhost:16686 (UI)
 docker build -t taskmaster:latest .
 
 # Run with Docker
-docker run -p 50051:50051 taskmaster:latest
+docker run -p 50051:50051 \
+  -e DB_HOST=your-db-host \
+  -e DB_PASSWORD=your-password \
+  taskmaster:latest
 ```
 
 ### Environment Variables
-```env
-# Server
-GRPC_PORT=50051
-HTTP_PORT=8080
-ENVIRONMENT=production
+See `.env.example` for all available configuration options.
 
-# Database
-DB_HOST=your-db-host
-DB_PORT=5432
-DB_USER=your-db-user
-DB_PASSWORD=your-db-password
-DB_NAME=taskmaster
-DB_SSL_MODE=require
-
-# Redis (for future implementation)
-REDIS_HOST=your-redis-host
-REDIS_PORT=6379
-```
+Key variables:
+- `GRPC_PORT` - gRPC server port (default: 50051)
+- `DB_*` - PostgreSQL connection settings
+- `REDIS_*` - Redis connection settings (for future use)
+- `JWT_SECRET` - JWT signing key (for future auth)
+- `ENVIRONMENT` - development/staging/production
 
 ## 📈 Performance
 
-- Connection pooling with configurable limits
-- Efficient Ent ORM queries with eager loading
-- Indexed database columns for fast queries
-- Ready for caching layer implementation
+- **Connection Pooling**: Configurable database connection limits
+- **Efficient Queries**: Ent ORM generates optimized SQL
+- **Indexed Columns**: Fast queries on common filters
+- **Prepared for Caching**: Redis integration ready
 
-## 🔐 Security (To Be Implemented)
+## 🔐 Security (Roadmap)
 
 - [ ] JWT authentication
-- [ ] mTLS for service-to-service communication
-- [ ] Rate limiting
+- [ ] Rate limiting per client
+- [ ] mTLS for service communication
 - [ ] API key management
 - [ ] RBAC (Role-Based Access Control)
 
-## 🔍 Observability (To Be Implemented)
+## 🔍 Observability (Roadmap)
 
+- [x] Health checks
 - [ ] Prometheus metrics
 - [ ] Jaeger distributed tracing
 - [ ] Structured logging with zerolog
-- [ ] Health checks ✅ (implemented)
-- [ ] Custom dashboards
+- [ ] Custom Grafana dashboards
 
 ## 🧪 Testing
 
@@ -282,63 +331,89 @@ go test ./...
 go test -v -race -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out -o coverage.html
 
-# Run integration tests
-go test ./test/integration/...
+# Run specific package tests
+go test ./internal/service/...
 
-# Load testing with k6 (to be implemented)
-k6 run scripts/k6/load_test.js
+# Run with verbose output
+go test -v ./...
 ```
-
-## 📚 Learning Resources
-
-### Technologies Used
-- [gRPC-Go](https://grpc.io/docs/languages/go/)
-- [Ent ORM](https://entgo.io/docs/getting-started/)
-- [Protocol Buffers](https://protobuf.dev/programming-guides/proto3/)
-- [PostgreSQL](https://www.postgresql.org/docs/)
-
-### Design Patterns
-- Repository Pattern
-- Clean Architecture
-- SOLID Principles
-- Domain-Driven Design (DDD)
 
 ## 🛣️ Roadmap
 
-### Phase 1 (Current) ✅
-- [x] Basic gRPC server setup
+### Phase 1 - Core (Completed ✅)
+- [x] gRPC server setup
 - [x] Ent ORM integration
 - [x] CRUD operations
 - [x] PostgreSQL database
 - [x] Docker Compose setup
+- [x] Clean code organization
 
-### Phase 2 (In Progress)
+### Phase 2 - Enhancement (Current)
 - [ ] JWT authentication
 - [ ] User management
-- [ ] Request validation
-- [ ] Error handling improvements
+- [ ] Request validation middleware
+- [ ] Enhanced error handling
+- [ ] Unit tests
 
-### Phase 3 (Planned)
-- [ ] Redis caching
+### Phase 3 - Scalability
+- [ ] Redis caching layer
 - [ ] Prometheus metrics
 - [ ] Jaeger tracing
 - [ ] Rate limiting
+- [ ] Circuit breaker
 
-### Phase 4 (Future)
-- [ ] Kubernetes deployment
-- [ ] CI/CD pipeline
-- [ ] GraphQL gateway
-- [ ] Event sourcing
+### Phase 4 - Production
+- [ ] Kubernetes manifests
+- [ ] Helm charts
+- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] API Gateway
+- [ ] GraphQL layer
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Generate code after schema changes (`./generate.ps1` or `./generate.sh`)
+4. Commit only source files (generated files are git-ignored)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
 
-## 📝 License
+### Development Guidelines
+- Never commit generated code (`**/generated/` directories)
+- Always update `.proto` or schema files, not generated code
+- Run `go fmt` before committing
+- Add tests for new features
+- Update documentation as needed
+
+## 📝 Common Issues & Solutions
+
+### Generated code not found
+```bash
+# Solution: Generate the code
+./generate.ps1  # Windows
+./generate.sh   # Linux/macOS
+```
+
+### PostgreSQL connection refused
+```bash
+# Solution: Start Docker services
+docker-compose up -d
+```
+
+### Import errors after pulling updates
+```bash
+# Solution: Regenerate code
+./generate.ps1  # or ./generate.sh
+```
+
+## 📚 Learning Resources
+
+- [gRPC-Go Documentation](https://grpc.io/docs/languages/go/)
+- [Ent ORM Documentation](https://entgo.io/docs/getting-started/)
+- [Protocol Buffers Guide](https://protobuf.dev/programming-guides/proto3/)
+- [Docker Compose Documentation](https://docs.docker.com/compose/)
+
+## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
@@ -350,9 +425,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🙏 Acknowledgments
 
 - Anthropic Claude for development assistance
-- Ent team for the amazing ORM
+- Ent team for the excellent ORM
 - gRPC team for the framework
-- Go community for excellent tools and libraries
+- Go community for amazing tools
 
 ---
 
