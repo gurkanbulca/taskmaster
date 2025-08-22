@@ -1,4 +1,9 @@
-﻿# TaskMaster - Production-Ready gRPC Server with Go
+﻿# 🚀 TaskMaster - Production-Ready gRPC Server with Go
+
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=for-the-badge&logo=go)](https://golang.org/doc/go1.24)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
+[![gRPC](https://img.shields.io/badge/gRPC-v1.75-244c5a?style=for-the-badge&logo=grpc)](https://grpc.io/)
+[![Ent](https://img.shields.io/badge/Ent-v0.14.5-5b9bd5?style=for-the-badge)](https://entgo.io/)
 
 A high-performance, scalable gRPC task management service built with Go, featuring comprehensive authentication, Ent ORM, PostgreSQL, and production-ready patterns.
 
@@ -9,6 +14,14 @@ A high-performance, scalable gRPC task management service built with Go, featuri
 - **📋 Task Management Service** - Full CRUD operations with relations
 - **👥 User Management** - Role-based access control (User, Manager, Admin)
 - **🔗 Task-User Relations** - Creator and assignee relationships
+
+### Phase 2 Security Features (✅ Complete)
+- **📧 Email Verification System** - Token-based email verification with configurable expiry
+- **🔑 Password Reset** - Secure password reset flow with rate limiting
+- **🔒 Account Lockout** - Configurable failed login attempts and lockout duration
+- **📊 Security Event Logging** - Complete audit trail with severity levels
+- **⏱️ Rate Limiting** - Protect against brute force and abuse
+- **🔄 Session Management** - JWT with refresh tokens and configurable timeout
 
 ### Technical Stack
 - **gRPC API** with Protocol Buffers for efficient communication
@@ -29,6 +42,8 @@ A high-performance, scalable gRPC task management service built with Go, featuri
 - **Protected Endpoints** with middleware-based authentication
 - **Password Security** with bcrypt and validation
 - **Token Management** with secure refresh patterns
+- **Email Notifications** for security events
+- **Account Protection** with automatic lockout
 
 ## 📋 Prerequisites
 
@@ -36,6 +51,7 @@ A high-performance, scalable gRPC task management service built with Go, featuri
 - Protocol Buffers compiler (protoc)
 - Docker & Docker Compose
 - Git
+- PowerShell 7.2+ (Windows) or Bash (Linux/macOS)
 
 ## 🛠️ Quick Setup
 
@@ -47,7 +63,7 @@ cd taskmaster
 
 ### 2. Install Required Tools
 
-#### Windows (PowerShell)
+#### Windows (PowerShell 7.2+)
 ```powershell
 # Install tools
 go install entgo.io/ent/cmd/ent@latest
@@ -120,7 +136,8 @@ taskmaster/
 ├── ent/
 │   ├── schema/
 │   │   ├── user.go                # ✅ User entity schema
-│   │   └── task.go                # ✅ Task entity schema
+│   │   ├── task.go                # ✅ Task entity schema
+│   │   └── security_event.go      # ✅ Security event schema
 │   ├── generate.go                # ✅ Ent code generation config
 │   └── generated/                 # ❌ Generated Ent ORM code
 ├── cmd/
@@ -135,7 +152,9 @@ taskmaster/
 │   ├── middleware/                # gRPC interceptors (Auth & Validation)
 │   └── models/                    # Legacy models (deprecated)
 ├── pkg/
-│   └── auth/                      # JWT & password utilities
+│   ├── auth/                      # JWT & password utilities
+│   ├── email/                     # Email service (SMTP/Mock)
+│   └── security/                  # Security event types
 ├── scripts/                       # Utility scripts
 ├── deployments/                   # Deployment configs
 ├── .env.example                   # Environment template
@@ -143,6 +162,7 @@ taskmaster/
 ├── docker-compose.yml             # Local services
 ├── generate.ps1                   # Windows code generation
 ├── generate.sh                    # Linux/macOS code generation
+├── run_tests.ps1                  # PowerShell test runner
 ├── go.mod
 └── README.md
 ```
@@ -151,7 +171,7 @@ taskmaster/
 
 | Type | Location | In Git? | Description |
 |------|----------|---------|-------------|
-| **Source** | `ent/schema/*.go` | ✅ Yes | User & Task entity definitions |
+| **Source** | `ent/schema/*.go` | ✅ Yes | User, Task & SecurityEvent entity definitions |
 | **Source** | `api/proto/**/*.proto` | ✅ Yes | Auth & Task service definitions |
 | **Source** | `internal/**/*.go` | ✅ Yes | Business logic & middleware |
 | **Source** | `pkg/**/*.go` | ✅ Yes | Shared utilities |
@@ -175,7 +195,10 @@ taskmaster/
 # Run with hot reload
 air
 
-# Run tests
+# Run tests with coverage (Windows PowerShell 7.2+)
+.\run_tests.ps1 -TestType all -Coverage
+
+# Run tests (Linux/macOS)
 go test ./...
 
 # Build binary
@@ -195,7 +218,7 @@ rm -rf ent/generated api/proto/*/v1/generated
 ### Modifying Schemas
 
 #### Update Ent Schema (Database)
-1. Edit `ent/schema/user.go` or `ent/schema/task.go`
+1. Edit `ent/schema/user.go`, `ent/schema/task.go`, or `ent/schema/security_event.go`
 2. Run `.\generate.ps1` or `./generate.sh`
 3. Restart server (migrations run automatically)
 
@@ -209,20 +232,30 @@ rm -rf ent/generated api/proto/*/v1/generated
 ### 🔐 AuthService
 
 #### Authentication Endpoints
-- `Register` - Create new user account
-- `Login` - Authenticate with email/username and password
+- `Register` - Create new user account with optional email verification
+- `Login` - Authenticate with email/username and password (tracks failed attempts)
 - `RefreshToken` - Generate new access token using refresh token
 - `Logout` - Invalidate refresh token
 
 #### User Management
-- `GetMe` - Get current authenticated user info
-- `UpdateProfile` - Update user profile (name, preferences)
-- `ChangePassword` - Change user password
+- `GetMe` - Get current authenticated user info with verification status
+- `UpdateProfile` - Update user profile (name, preferences, notifications)
+- `ChangePassword` - Change user password with optional email notification
 
-#### Future Features (Placeholder)
-- `VerifyEmail` - Email verification
-- `RequestPasswordReset` - Initiate password reset
-- `ResetPassword` - Complete password reset
+#### Email Verification (Phase 2)
+- `SendVerificationEmail` - Send verification email to authenticated user
+- `VerifyEmail` - Verify email address using token
+- `ResendVerificationEmail` - Resend verification with rate limiting
+- `GetVerificationStatus` - Get current verification status
+
+#### Password Reset (Phase 2)
+- `RequestPasswordReset` - Initiate password reset (rate limited)
+- `VerifyPasswordResetToken` - Check if reset token is valid
+- `ResetPassword` - Complete password reset with new password
+
+#### Security (Phase 2)
+- `GetSecurityEvents` - View security audit log (filtered by role)
+- `UnlockAccount` - Admin-only: unlock a locked account
 
 ### 📋 TaskService
 
@@ -251,10 +284,13 @@ Fields:
 - FirstName, LastName (optional)
 - Role (enum: user, manager, admin)
 - IsActive, EmailVerified (boolean)
-- RefreshToken (string, sensitive)
-- RefreshTokenExpiresAt (timestamp)
-- Preferences (JSON)
-- LastLogin (timestamp)
+- EmailVerificationToken, EmailVerificationExpiresAt
+- PasswordResetToken, PasswordResetExpiresAt
+- FailedLoginAttempts, AccountLockedUntil
+- RefreshToken, RefreshTokenExpiresAt (sensitive)
+- LastLogin, LastLoginIP
+- Preferences, NotificationPreferences (JSON)
+- EmailNotificationsEnabled, SecurityNotificationsEnabled
 - CreatedAt, UpdatedAt (auto-managed)
 
 Indexes:
@@ -262,6 +298,10 @@ Indexes:
 - username (unique)
 - email + is_active (login queries)
 - role + is_active (authorization)
+- email_verification_token (unique)
+- password_reset_token (unique)
+- account_locked_until
+- email + failed_login_attempts (security)
 ```
 
 ### Task Entity (Task Management)
@@ -289,6 +329,31 @@ Indexes:
 - created_at, due_date
 ```
 
+### SecurityEvent Entity (Audit Logging)
+```
+Fields:
+- ID (UUID, auto-generated)
+- UserID (UUID, required) - User who triggered event
+- EventType (enum: login_success, login_failed, password_changed, etc.)
+- Severity (enum: low, medium, high, critical)
+- Description (string, optional)
+- IPAddress, UserAgent (string, optional)
+- Metadata (JSON)
+- Resolved (boolean, default: false)
+- CreatedAt (timestamp, immutable)
+
+Relations:
+- User (User) - Many events to one user
+
+Indexes:
+- user_id
+- event_type
+- severity
+- created_at
+- user_id + event_type + created_at (composite)
+- resolved + severity + created_at (unresolved events)
+```
+
 ## 🧪 Testing the API
 
 ### Using the Test Clients
@@ -301,6 +366,7 @@ Features:
 - User registration and login
 - Token refresh and logout
 - Profile updates and password changes
+- Account lockout testing
 - Permission testing
 
 #### Task Test Client
@@ -327,14 +393,27 @@ grpcurl -plaintext -d '{
   "username": "testuser",
   "password": "SecurePass123!",
   "first_name": "Test",
-  "last_name": "User"
+  "last_name": "User",
+  "send_verification_email": true
 }' localhost:50051 auth.v1.AuthService/Register
 
 # Login
 grpcurl -plaintext -d '{
   "email": "user@example.com",
-  "password": "SecurePass123!"
+  "password": "SecurePass123!",
+  "ip_address": "127.0.0.1",
+  "user_agent": "grpcurl/test"
 }' localhost:50051 auth.v1.AuthService/Login
+
+# Request password reset
+grpcurl -plaintext -d '{
+  "email": "user@example.com"
+}' localhost:50051 auth.v1.AuthService/RequestPasswordReset
+
+# Verify email
+grpcurl -plaintext -d '{
+  "token": "your-verification-token"
+}' localhost:50051 auth.v1.AuthService/VerifyEmail
 ```
 
 #### Task Management Examples (with auth token)
@@ -353,6 +432,12 @@ grpcurl -plaintext \
   -H "authorization: Bearer YOUR_ACCESS_TOKEN" \
   -d '{"page_size": 10}' \
   localhost:50051 task.v1.TaskService/ListTasks
+
+# Get security events
+grpcurl -plaintext \
+  -H "authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -d '{"page_size": 10}' \
+  localhost:50051 auth.v1.AuthService/GetSecurityEvents
 ```
 
 ## 🐳 Docker Services
@@ -385,24 +470,35 @@ docker-compose up -d
 - **JWT Authentication** with access/refresh token pattern
 - **bcrypt Password Hashing** with configurable strength
 - **Role-based Authorization** (User/Manager/Admin)
-- **Input Validation** middleware
-- **Password Requirements** (length, complexity)
+- **Input Validation** middleware with comprehensive checks
+- **Password Requirements** (length, complexity - configurable)
 - **Token Expiration** and secure refresh
 - **Sensitive Field Protection** (passwords, tokens not logged)
+- **Account Lockout** after configurable failed attempts
+- **Email Verification** with token expiration
+- **Password Reset** with rate limiting
+- **Security Event Logging** for audit trail
+- **IP and User-Agent tracking** for security events
 
 ### Security Configuration
 ```go
-// Password Requirements (configurable)
-MinLength: 8 characters
-RequireUpper: true
-RequireLower: true  
-RequireNumber: true
-RequireSpecial: false (configurable)
+// Password Requirements (configurable via .env)
+MinLength: 8 characters (MIN_PASSWORD_LENGTH)
+RequireUpper: true (REQUIRE_PASSWORD_UPPER)
+RequireLower: true (REQUIRE_PASSWORD_LOWER)
+RequireNumber: true (REQUIRE_PASSWORD_NUMBER)
+RequireSpecial: false (REQUIRE_PASSWORD_SPECIAL)
 
-// JWT Settings
-AccessTokenDuration: 15 minutes (configurable)
-RefreshTokenDuration: 7 days (configurable)
+// JWT Settings (configurable via .env)
+AccessTokenDuration: 15 minutes (JWT_ACCESS_TOKEN_DURATION)
+RefreshTokenDuration: 7 days (JWT_REFRESH_TOKEN_DURATION)
 Signing Algorithm: HS256
+
+// Account Security (configurable via .env)
+MaxLoginAttempts: 5 (MAX_LOGIN_ATTEMPTS)
+AccountLockoutDuration: 15 minutes (ACCOUNT_LOCKOUT_DURATION)
+PasswordResetRateLimit: 15 minutes (PASSWORD_RESET_RATE_LIMIT)
+EmailVerificationRequired: false (REQUIRE_EMAIL_VERIFICATION)
 ```
 
 ## ⚡ Performance Features
@@ -413,6 +509,52 @@ Signing Algorithm: HS256
 - **Batch Operations**: Support for bulk task operations
 - **Transaction Support**: Atomic multi-operation updates
 - **Prepared for Caching**: Redis integration ready
+
+## 🧪 Testing
+
+### Using PowerShell Test Runner (Windows - PowerShell 7.2+)
+```powershell
+# Run all tests with coverage
+.\run_tests.ps1 -TestType all -Coverage
+
+# Run unit tests with verbose output
+.\run_tests.ps1 -TestType unit -VerboseOutput
+
+# Run integration tests with race detection
+.\run_tests.ps1 -TestType integration -Race
+
+# Run specific package tests
+.\run_tests.ps1 -Package "./internal/service" -Coverage
+
+# Clean cache and run with coverage threshold
+.\run_tests.ps1 -Clean -Coverage -CoverageThreshold 80
+
+# Get help
+.\run_tests.ps1 -Help
+```
+
+### Manual Testing
+```bash
+# Run all tests
+go test ./...
+
+# Run with coverage
+go test -v -race -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+
+# Run specific package tests
+go test ./internal/service/...
+
+# Run with verbose output
+go test -v ./...
+```
+
+### Test Coverage Areas
+- **Auth Service**: Registration, login, password reset, email verification, account lockout
+- **Security Service**: Event logging, rate limiting, account protection
+- **Task Service**: CRUD operations, permissions, relationships
+- **Email Service**: Mock and SMTP implementations
+- **Middleware**: Authentication, validation, context extraction
 
 ## 🚀 Production Deployment
 
@@ -438,6 +580,10 @@ Key production variables:
 - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` - **Must be changed in production**
 - `JWT_ACCESS_TOKEN_DURATION`, `JWT_REFRESH_TOKEN_DURATION` - Token lifetimes
 - `ENVIRONMENT` - development/staging/production
+- `MAX_LOGIN_ATTEMPTS` - Failed attempts before lockout
+- `ACCOUNT_LOCKOUT_DURATION` - How long to lock accounts
+- `REQUIRE_EMAIL_VERIFICATION` - Enforce email verification
+- `EMAIL_*` - SMTP configuration for email sending
 
 ⚠️ **Security Warning**: Change all default secrets before production deployment!
 
@@ -447,26 +593,10 @@ Key production variables:
 - [x] gRPC reflection for development
 - [x] Structured logging with request tracing
 - [x] User context in logs
+- [x] Security event audit logging
 - [ ] Prometheus metrics
 - [ ] Jaeger distributed tracing
 - [ ] Custom Grafana dashboards
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run with coverage
-go test -v -race -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out -o coverage.html
-
-# Run specific package tests
-go test ./internal/service/...
-
-# Run with verbose output
-go test -v ./...
-```
 
 ## 🛣️ Roadmap
 
@@ -480,26 +610,32 @@ go test -v ./...
 - [x] Docker Compose setup
 - [x] Comprehensive test clients
 
-### 🔄 Phase 2 - Enhancement (Current)
-- [ ] Email verification system
-- [ ] Password reset functionality
-- [ ] Request validation enhancements
-- [ ] Comprehensive unit tests
-- [ ] API documentation generation
+### ✅ Phase 2 - Enhancement (Completed)
+- [x] Email verification system
+- [x] Password reset functionality
+- [x] Account lockout mechanism
+- [x] Security event logging
+- [x] Rate limiting implementation
+- [x] Enhanced validation middleware
+- [x] Comprehensive test coverage
+- [x] PowerShell test runner with coverage
+- [x] Test helper utilities
+- [x] Configurable security settings
 
-### 🔮 Phase 3 - Scalability
+### 🔄 Phase 3 - Scalability (In Progress)
 - [ ] Redis caching layer
 - [ ] Prometheus metrics
 - [ ] Jaeger tracing
-- [ ] Rate limiting
 - [ ] Circuit breaker pattern
+- [ ] Message queue integration
 
-### 🚀 Phase 4 - Production
+### 🚀 Phase 4 - Production (Planned)
 - [ ] Kubernetes manifests
 - [ ] Helm charts
 - [ ] CI/CD pipeline (GitHub Actions)
 - [ ] API Gateway integration
 - [ ] GraphQL layer
+- [ ] Multi-tenancy support
 
 ## 🤝 Contributing
 
@@ -523,7 +659,7 @@ go test -v ./...
 ### Generated code not found
 ```bash
 # Solution: Generate the code
-./generate.ps1  # Windows
+.\generate.ps1  # Windows
 ./generate.sh   # Linux/macOS
 ```
 
@@ -536,7 +672,7 @@ docker-compose up -d
 ### Import errors after pulling updates
 ```bash
 # Solution: Regenerate code and update dependencies
-./generate.ps1  # or ./generate.sh
+.\generate.ps1  # or ./generate.sh
 go mod tidy
 ```
 
@@ -544,6 +680,12 @@ go mod tidy
 ```bash
 # Solution: Check JWT secrets in .env
 # Make sure JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are set
+```
+
+### PowerShell script execution policy error
+```powershell
+# Solution: Set execution policy for current user
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
 ## 📚 Learning Resources
@@ -556,11 +698,11 @@ go mod tidy
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 👨‍💻 Author
 
-**Gurkan Bulca**
+**Gürkan Bulca**
 - GitHub: [@gurkanbulca](https://github.com/gurkanbulca)
 
 ## 🙏 Acknowledgments
