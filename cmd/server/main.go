@@ -1,4 +1,4 @@
-// cmd/server/main.go
+// cmd/server/main.go - Integration Example for Phase 2
 package main
 
 import (
@@ -28,6 +28,7 @@ import (
 	"github.com/gurkanbulca/taskmaster/internal/repository"
 	"github.com/gurkanbulca/taskmaster/internal/service"
 	"github.com/gurkanbulca/taskmaster/pkg/auth"
+	"github.com/gurkanbulca/taskmaster/pkg/email"
 )
 
 func main() {
@@ -42,6 +43,11 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Validate configuration
+	if err := cfg.ValidateConfig(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
 	// Connect to database with Ent
 	log.Println("Connecting to PostgreSQL with Ent...")
 	entClient, err := database.NewEntClient(database.Config{
@@ -51,7 +57,7 @@ func main() {
 		Password: cfg.Database.Password,
 		DBName:   cfg.Database.DBName,
 		SSLMode:  cfg.Database.SSLMode,
-		Debug:    cfg.Server.Environment == "development",
+		Debug:    cfg.IsDevelopment(),
 	})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -63,8 +69,10 @@ func main() {
 	}()
 
 	// Run auto migration
-	if err := runAutoMigration(context.Background(), entClient); err != nil {
-		log.Fatalf("Failed to run auto migration: %v", err)
+	if cfg.Server.AutoMigrate {
+		if err := runAutoMigration(context.Background(), entClient); err != nil {
+			log.Fatalf("Failed to run auto migration: %v", err)
+		}
 	}
 
 	// Initialize token manager
@@ -75,25 +83,52 @@ func main() {
 		cfg.JWT.RefreshTokenDuration,
 	)
 
-	// Initialize repositories
-	taskRepo := repository.NewEntTaskRepository(entClient)
+	// Initialize email service
+	var emailService email.EmailService
+	if cfg.Email.TestingMode || cfg.IsDevelopment() {
+		log.Println("Using mock email service for development/testing")
+		emailService = email.NewMockEmailService()
+	} else {
+		log.Println("Using SMTP email service")
+		emailService = email.NewSMTPEmailService(cfg.ToEmailConfig())
+
+		// Test SMTP connection
+		if smtpService, ok := emailService.(*email.SMTPEmailService); ok {
+			if err := smtpService.TestConnection(context.Background()); err != nil {
+				log.Printf("Warning: SMTP connection test failed: %v", err)
+			} else {
+				log.Println("SMTP connection test successful")
+			}
+		}
+	}
 
 	// Initialize services
-	authService := service.NewAuthService(entClient, tokenManager)
+	securityService := service.NewSecurityService(entClient)
+	securityLogger := service.NewSecurityLogger(securityService)
+
+	emailVerificationService := service.NewEmailVerificationService(entClient, emailService, securityLogger)
+	passwordResetService := service.NewPasswordResetService(entClient, emailService, auth.NewPasswordManager(), securityLogger)
+
+	taskRepo := repository.NewEntTaskRepository(entClient)
+	authService := service.NewAuthService(entClient, tokenManager, emailVerificationService, passwordResetService, securityLogger)
 	taskService := service.NewTaskService(taskRepo)
 
 	// Initialize middleware
-	authInterceptor := middleware.NewAuthInterceptor(tokenManager)
-	validationInterceptor := middleware.NewValidationInterceptor()
+	metadataExtractor := middleware.NewMetadataExtractorInterceptor()
+	authInterceptor := middleware.NewUpdatedAuthInterceptor(tokenManager)
+	validationInterceptor := middleware.NewEnhancedValidationInterceptor(cfg.ToValidationConfig())
 
 	// Create gRPC server with interceptors
+	// Note: Order matters! Metadata extraction should come first
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
+			metadataExtractor.Unary(), // Extract IP/User-Agent first
 			validationInterceptor.Unary(),
 			authInterceptor.Unary(),
 			loggingInterceptor,
 		),
 		grpc.ChainStreamInterceptor(
+			metadataExtractor.Stream(), // Extract IP/User-Agent first
 			validationInterceptor.Stream(),
 			authInterceptor.Stream(),
 		),
@@ -108,8 +143,11 @@ func main() {
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-	// Register reflection for grpcurl
-	reflection.Register(grpcServer)
+	// Register reflection for development
+	if cfg.Server.EnableReflection {
+		reflection.Register(grpcServer)
+		log.Println("gRPC reflection enabled (disable in production)")
+	}
 
 	// Create listener
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", cfg.Server.GRPCPort))
@@ -117,20 +155,36 @@ func main() {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
+	// Start background cleanup job
+	go startCleanupJob(context.Background(), emailVerificationService, passwordResetService)
+
 	// Start server in goroutine
 	go func() {
-		log.Printf("gRPC server listening on port %s", cfg.Server.GRPCPort)
-		log.Println("Server is ready to accept connections")
+		log.Printf("🚀 TaskMaster gRPC server listening on port %s", cfg.Server.GRPCPort)
+		log.Printf("📍 Environment: %s", cfg.Server.Environment)
 		log.Println("")
-		log.Println("Services available:")
-		log.Println("  - AuthService (authentication)")
-		log.Println("  - TaskService (task management)")
-		log.Println("  - Health (health checks)")
+		log.Println("📡 Services available:")
+		log.Println("   • AuthService (authentication & user management)")
+		log.Println("   • TaskService (task management)")
+		log.Println("   • Health (health checks)")
 		log.Println("")
-		log.Println("Test commands:")
-		log.Printf("  grpcurl -plaintext localhost:%s list", cfg.Server.GRPCPort)
-		log.Printf("  grpcurl -plaintext localhost:%s describe auth.v1.AuthService", cfg.Server.GRPCPort)
-		log.Printf("  grpcurl -plaintext localhost:%s describe task.v1.TaskService", cfg.Server.GRPCPort)
+		log.Println("🔧 Phase 2 Features:")
+		log.Println("   • Email verification system")
+		log.Println("   • Password reset functionality")
+		log.Println("   • Security event logging")
+		log.Println("   • Enhanced validation")
+		log.Println("")
+		log.Println("🧪 Test commands:")
+		log.Printf("   grpcurl -plaintext localhost:%s list", cfg.Server.GRPCPort)
+		log.Printf("   grpcurl -plaintext localhost:%s describe auth.v1.AuthService", cfg.Server.GRPCPort)
+		log.Printf("   grpcurl -plaintext localhost:%s describe task.v1.TaskService", cfg.Server.GRPCPort)
+		log.Println("")
+
+		if cfg.Email.TestingMode {
+			log.Println("📧 Email service: Mock (emails will be logged, not sent)")
+		} else {
+			log.Printf("📧 Email service: SMTP (%s)", cfg.Email.SMTPHost)
+		}
 
 		if err := grpcServer.Serve(listener); err != nil {
 			log.Fatalf("Failed to serve: %v", err)
@@ -142,7 +196,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	log.Println("📴 Shutting down server...")
 
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -156,16 +210,16 @@ func main() {
 
 	select {
 	case <-done:
-		log.Println("Server shutdown complete")
+		log.Println("✅ Server shutdown complete")
 	case <-ctx.Done():
 		grpcServer.Stop()
-		log.Println("Server shutdown forced")
+		log.Println("⚠️  Server shutdown forced")
 	}
 }
 
 // runAutoMigration runs the auto migration
 func runAutoMigration(ctx context.Context, client *ent.Client) error {
-	log.Println("Running auto migration...")
+	log.Println("🔄 Running auto migration...")
 
 	err := client.Schema.Create(
 		ctx,
@@ -177,34 +231,64 @@ func runAutoMigration(ctx context.Context, client *ent.Client) error {
 		return fmt.Errorf("run auto migration: %w", err)
 	}
 
-	log.Println("Auto migration completed")
+	log.Println("✅ Auto migration completed")
 	return nil
 }
 
-// Simple logging interceptor
+// startCleanupJob starts background cleanup jobs
+func startCleanupJob(ctx context.Context, emailVerificationService *service.EmailVerificationService, passwordResetService *service.PasswordResetService) {
+	ticker := time.NewTicker(1 * time.Hour) // Run cleanup every hour
+	defer ticker.Stop()
+
+	log.Println("🧹 Starting background cleanup job (runs every hour)")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Cleanup expired email verification tokens
+			if err := emailVerificationService.CleanupExpiredTokens(ctx); err != nil {
+				log.Printf("Failed to cleanup expired email verification tokens: %v", err)
+			}
+
+			// Cleanup expired password reset tokens
+			if err := passwordResetService.CleanupExpiredTokens(ctx); err != nil {
+				log.Printf("Failed to cleanup expired password reset tokens: %v", err)
+			}
+
+			log.Println("🧹 Token cleanup completed")
+		}
+	}
+}
+
+// Enhanced logging interceptor with client information
 func loggingInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	start := time.Now()
 
-	// Get user info from context if available
-	userID, _ := middleware.GetUserIDFromContext(ctx)
+	// Get client info from context
+	clientInfo := middleware.GetClientInfoFromContext(ctx)
 
 	// Call the handler
 	resp, err := handler(ctx, req)
 
-	// Log the call
+	// Log the call with client information
 	duration := time.Since(start)
+	logLevel := "INFO"
 	if err != nil {
-		if userID != "" {
-			log.Printf("[%s] %s failed in %v (user: %s): %v", "ERROR", info.FullMethod, duration, userID, err)
-		} else {
-			log.Printf("[%s] %s failed in %v: %v", "ERROR", info.FullMethod, duration, err)
-		}
+		logLevel = "ERROR"
+	}
+
+	if clientInfo.UserID != "" {
+		log.Printf("[%s] %s completed in %v (user: %s, ip: %s)",
+			logLevel, info.FullMethod, duration, clientInfo.UserID, clientInfo.IPAddress)
 	} else {
-		if userID != "" {
-			log.Printf("[%s] %s completed in %v (user: %s)", "INFO", info.FullMethod, duration, userID)
-		} else {
-			log.Printf("[%s] %s completed in %v", "INFO", info.FullMethod, duration)
-		}
+		log.Printf("[%s] %s completed in %v (ip: %s)",
+			logLevel, info.FullMethod, duration, clientInfo.IPAddress)
+	}
+
+	if err != nil {
+		log.Printf("[ERROR] %s error: %v", info.FullMethod, err)
 	}
 
 	return resp, err

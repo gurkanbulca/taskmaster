@@ -1,4 +1,4 @@
-// ent/schema/user.go
+// ent/schema/user.go - Updated for Phase 2
 package schema
 
 import (
@@ -65,11 +65,66 @@ func (User) Fields() []ent.Field {
 			Default(false).
 			Comment("Whether email is verified"),
 
+		// Email Verification - Phase 2
+		field.String("email_verification_token").
+			Optional().
+			Sensitive().
+			Comment("Token for email verification"),
+
+		field.Time("email_verification_expires_at").
+			Optional().
+			Nillable().
+			Comment("Email verification token expiration"),
+
+		field.Int("email_verification_attempts").
+			Default(0).
+			Comment("Number of email verification attempts"),
+
+		// Password Reset - Phase 2
+		field.String("password_reset_token").
+			Optional().
+			Sensitive().
+			Comment("Token for password reset"),
+
+		field.Time("password_reset_expires_at").
+			Optional().
+			Nillable().
+			Comment("Password reset token expiration"),
+
+		field.Time("password_reset_at").
+			Optional().
+			Nillable().
+			Comment("Last password reset timestamp"),
+
+		field.Int("password_reset_attempts").
+			Default(0).
+			Comment("Number of password reset attempts"),
+
+		// Security - Phase 2
+		field.Int("failed_login_attempts").
+			Default(0).
+			Comment("Number of consecutive failed login attempts"),
+
+		field.Time("account_locked_until").
+			Optional().
+			Nillable().
+			Comment("Account lockout expiration"),
+
 		field.Time("last_login").
 			Optional().
 			Nillable().
-			Comment("Last login timestamp"),
+			Comment("Last successful login timestamp"),
 
+		field.String("last_login_ip").
+			Optional().
+			Comment("IP address of last login"),
+
+		field.Time("password_changed_at").
+			Optional().
+			Nillable().
+			Comment("When password was last changed"),
+
+		// JWT Tokens
 		field.String("refresh_token").
 			Optional().
 			Sensitive().
@@ -80,11 +135,27 @@ func (User) Fields() []ent.Field {
 			Nillable().
 			Comment("Refresh token expiration"),
 
+		// User Preferences
 		field.JSON("preferences", map[string]interface{}{}).
 			Optional().
 			Default(map[string]interface{}{}).
-			Comment("User preferences"),
+			Comment("User preferences and settings"),
 
+		// Notification Settings - Phase 2
+		field.Bool("email_notifications_enabled").
+			Default(true).
+			Comment("Whether email notifications are enabled"),
+
+		field.Bool("security_notifications_enabled").
+			Default(true).
+			Comment("Whether security email notifications are enabled"),
+
+		field.JSON("notification_preferences", map[string]interface{}{}).
+			Optional().
+			Default(map[string]interface{}{}).
+			Comment("Detailed notification preferences"),
+
+		// Timestamps
 		field.Time("created_at").
 			Default(time.Now).
 			Immutable().
@@ -107,6 +178,10 @@ func (User) Edges() []ent.Edge {
 		// A user can be assigned to many tasks
 		edge.To("assigned_tasks", Task.Type).
 			Comment("Tasks assigned to this user"),
+
+		// Security events - Phase 2
+		edge.To("security_events", SecurityEvent.Type).
+			Comment("Security events related to this user"),
 	}
 }
 
@@ -127,7 +202,120 @@ func (User) Indexes() []ent.Index {
 		// Index for role-based queries
 		index.Fields("role", "is_active"),
 
+		// Index for email verification
+		index.Fields("email_verification_token").
+			Unique(),
+
+		// Index for password reset
+		index.Fields("password_reset_token").
+			Unique(),
+
+		// Index for account security
+		index.Fields("account_locked_until"),
+
 		// Index for created_at sorting
 		index.Fields("created_at"),
+
+		// Composite index for security queries
+		index.Fields("email", "failed_login_attempts"),
+	}
+}
+
+// SecurityEvent holds the schema definition for security events
+type SecurityEvent struct {
+	ent.Schema
+}
+
+// Fields of the SecurityEvent.
+func (SecurityEvent) Fields() []ent.Field {
+	return []ent.Field{
+		field.UUID("id", uuid.UUID{}).
+			Default(uuid.New).
+			Immutable(),
+
+		field.UUID("user_id", uuid.UUID{}).
+			Comment("User who triggered the event"),
+
+		field.Enum("event_type").
+			Values(
+				"login_success",
+				"login_failed",
+				"password_changed",
+				"password_reset_requested",
+				"password_reset_completed",
+				"email_verification_sent",
+				"email_verification_completed",
+				"account_locked",
+				"account_unlocked",
+				"security_alert",
+				"suspicious_activity",
+			).
+			Comment("Type of security event"),
+
+		field.String("ip_address").
+			Optional().
+			Comment("IP address where event occurred"),
+
+		field.String("user_agent").
+			Optional().
+			Comment("User agent string"),
+
+		field.String("description").
+			Optional().
+			Comment("Human-readable description of the event"),
+
+		field.JSON("metadata", map[string]interface{}{}).
+			Optional().
+			Default(map[string]interface{}{}).
+			Comment("Additional event metadata"),
+
+		field.Enum("severity").
+			Values("low", "medium", "high", "critical").
+			Default("low").
+			Comment("Event severity level"),
+
+		field.Bool("resolved").
+			Default(false).
+			Comment("Whether the security event has been resolved"),
+
+		field.Time("created_at").
+			Default(time.Now).
+			Immutable().
+			Comment("When the event occurred"),
+	}
+}
+
+// Edges of the SecurityEvent.
+func (SecurityEvent) Edges() []ent.Edge {
+	return []ent.Edge{
+		// Security event belongs to a user
+		edge.From("user", User.Type).
+			Ref("security_events").
+			Unique().
+			Required().
+			Field("user_id"),
+	}
+}
+
+// Indexes of the SecurityEvent.
+func (SecurityEvent) Indexes() []ent.Index {
+	return []ent.Index{
+		// Index on user_id for user-specific queries
+		index.Fields("user_id"),
+
+		// Index on event_type for filtering
+		index.Fields("event_type"),
+
+		// Index on severity for security monitoring
+		index.Fields("severity"),
+
+		// Index on created_at for time-based queries
+		index.Fields("created_at"),
+
+		// Composite index for user event queries
+		index.Fields("user_id", "event_type", "created_at"),
+
+		// Index for unresolved security events
+		index.Fields("resolved", "severity", "created_at"),
 	}
 }

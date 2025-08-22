@@ -12,14 +12,14 @@ import (
 	"github.com/gurkanbulca/taskmaster/pkg/auth"
 )
 
-// AuthInterceptor provides authentication middleware
-type AuthInterceptor struct {
+// UpdatedAuthInterceptor provides authentication middleware with metadata extraction
+type UpdatedAuthInterceptor struct {
 	tokenManager  *auth.TokenManager
 	publicMethods map[string]bool
 }
 
-// NewAuthInterceptor creates a new auth interceptor
-func NewAuthInterceptor(tokenManager *auth.TokenManager) *AuthInterceptor {
+// NewUpdatedAuthInterceptor creates a new auth interceptor
+func NewUpdatedAuthInterceptor(tokenManager *auth.TokenManager) *UpdatedAuthInterceptor {
 	// Define which methods don't require authentication
 	publicMethods := map[string]bool{
 		"/auth.v1.AuthService/Register":             true,
@@ -32,14 +32,14 @@ func NewAuthInterceptor(tokenManager *auth.TokenManager) *AuthInterceptor {
 		"/grpc.health.v1.Health/Watch":              true,
 	}
 
-	return &AuthInterceptor{
+	return &UpdatedAuthInterceptor{
 		tokenManager:  tokenManager,
 		publicMethods: publicMethods,
 	}
 }
 
 // Unary returns a unary server interceptor for authentication
-func (a *AuthInterceptor) Unary() grpc.UnaryServerInterceptor {
+func (a *UpdatedAuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
@@ -61,37 +61,8 @@ func (a *AuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 	}
 }
 
-// Stream returns a stream server interceptor for authentication
-func (a *AuthInterceptor) Stream() grpc.StreamServerInterceptor {
-	return func(
-		srv interface{},
-		stream grpc.ServerStream,
-		info *grpc.StreamServerInfo,
-		handler grpc.StreamHandler,
-	) error {
-		// Check if method requires authentication
-		if a.publicMethods[info.FullMethod] {
-			return handler(srv, stream)
-		}
-
-		// Extract and validate token
-		newCtx, err := a.authenticate(stream.Context())
-		if err != nil {
-			return err
-		}
-
-		// Wrap the stream with authenticated context
-		wrappedStream := &authenticatedServerStream{
-			ServerStream: stream,
-			ctx:          newCtx,
-		}
-
-		return handler(srv, wrappedStream)
-	}
-}
-
 // authenticate extracts and validates the JWT token from metadata
-func (a *AuthInterceptor) authenticate(ctx context.Context) (context.Context, error) {
+func (a *UpdatedAuthInterceptor) authenticate(ctx context.Context) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing metadata")
@@ -115,59 +86,10 @@ func (a *AuthInterceptor) authenticate(ctx context.Context) (context.Context, er
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
 
-	// Add user information to context
-	ctx = context.WithValue(ctx, "user_id", claims.UserID)
-	ctx = context.WithValue(ctx, "user_email", claims.Email)
-	ctx = context.WithValue(ctx, "user_username", claims.Username)
-	ctx = context.WithValue(ctx, "user_role", claims.Role)
+	// Add user information to context using new context keys
+	ctx = context.WithValue(ctx, ContextKeyUserID, claims.UserID)
+	ctx = context.WithValue(ctx, ContextKeyUserEmail, claims.Email)
+	ctx = context.WithValue(ctx, ContextKeyUserRole, claims.Role)
 
 	return ctx, nil
-}
-
-// authenticatedServerStream wraps grpc.ServerStream with authenticated context
-type authenticatedServerStream struct {
-	grpc.ServerStream
-	ctx context.Context
-}
-
-func (s *authenticatedServerStream) Context() context.Context {
-	return s.ctx
-}
-
-// GetUserIDFromContext extracts user ID from context
-func GetUserIDFromContext(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value("user_id").(string)
-	return userID, ok
-}
-
-// GetUserRoleFromContext extracts user role from context
-func GetUserRoleFromContext(ctx context.Context) (string, bool) {
-	role, ok := ctx.Value("user_role").(string)
-	return role, ok
-}
-
-// RequireRole creates an interceptor that requires specific roles
-func RequireRole(roles ...string) grpc.UnaryServerInterceptor {
-	roleMap := make(map[string]bool)
-	for _, role := range roles {
-		roleMap[role] = true
-	}
-
-	return func(
-		ctx context.Context,
-		req interface{},
-		info *grpc.UnaryServerInfo,
-		handler grpc.UnaryHandler,
-	) (interface{}, error) {
-		userRole, ok := GetUserRoleFromContext(ctx)
-		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "user not authenticated")
-		}
-
-		if !roleMap[userRole] {
-			return nil, status.Error(codes.PermissionDenied, "insufficient permissions")
-		}
-
-		return handler(ctx, req)
-	}
 }

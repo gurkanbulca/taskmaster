@@ -1,4 +1,4 @@
-// api/proto/auth/v1/auth.proto
+// api/proto/auth/v1/auth.proto - Updated for Phase 2
 syntax = "proto3";
 
 package auth.v1;
@@ -10,35 +10,31 @@ option go_package = "github.com/gurkanbulca/taskmaster/api/proto/auth/v1/generat
 
 // Authentication service
 service AuthService {
-  // Register a new user
+  // Registration and Login
   rpc Register(RegisterRequest) returns (RegisterResponse);
-
-  // Login with email and password
   rpc Login(LoginRequest) returns (LoginResponse);
-
-  // Refresh access token
   rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
-
-  // Logout and invalidate tokens
   rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
 
-  // Get current user info
+  // User Management
   rpc GetMe(google.protobuf.Empty) returns (GetMeResponse);
-
-  // Update current user profile
   rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
-
-  // Change password
   rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty);
 
-  // Verify email
+  // Email Verification - Phase 2
+  rpc SendVerificationEmail(SendVerificationEmailRequest) returns (google.protobuf.Empty);
   rpc VerifyEmail(VerifyEmailRequest) returns (google.protobuf.Empty);
+  rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (google.protobuf.Empty);
+  rpc GetVerificationStatus(GetVerificationStatusRequest) returns (GetVerificationStatusResponse);
 
-  // Request password reset
+  // Password Reset - Phase 2
   rpc RequestPasswordReset(RequestPasswordResetRequest) returns (google.protobuf.Empty);
-
-  // Reset password with token
+  rpc VerifyPasswordResetToken(VerifyPasswordResetTokenRequest) returns (VerifyPasswordResetTokenResponse);
   rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty);
+
+  // Security - Phase 2
+  rpc GetSecurityEvents(GetSecurityEventsRequest) returns (GetSecurityEventsResponse);
+  rpc UnlockAccount(UnlockAccountRequest) returns (google.protobuf.Empty);
 }
 
 // User message
@@ -54,6 +50,13 @@ message User {
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   google.protobuf.Timestamp last_login = 11;
+
+  // Phase 2 additions
+  bool email_notifications_enabled = 12;
+  bool security_notifications_enabled = 13;
+  int32 failed_login_attempts = 14;
+  google.protobuf.Timestamp account_locked_until = 15;
+  google.protobuf.Timestamp password_changed_at = 16;
 }
 
 // User roles
@@ -71,6 +74,7 @@ message RegisterRequest {
   string password = 3;
   string first_name = 4;
   string last_name = 5;
+  bool send_verification_email = 6; // Phase 2: Optional immediate verification
 }
 
 message RegisterResponse {
@@ -78,12 +82,15 @@ message RegisterResponse {
   string access_token = 2;
   string refresh_token = 3;
   int64 expires_in = 4; // seconds
+  bool email_verification_required = 5; // Phase 2
 }
 
 // Login request
 message LoginRequest {
   string email = 1;     // Can be email or username
   string password = 2;
+  string ip_address = 3; // Phase 2: For security logging
+  string user_agent = 4; // Phase 2: For security logging
 }
 
 message LoginResponse {
@@ -91,6 +98,9 @@ message LoginResponse {
   string access_token = 2;
   string refresh_token = 3;
   int64 expires_in = 4; // seconds
+  bool email_verification_required = 5; // Phase 2
+  bool account_locked = 6; // Phase 2
+  google.protobuf.Timestamp locked_until = 7; // Phase 2
 }
 
 // Refresh token request
@@ -112,6 +122,7 @@ message LogoutRequest {
 // Get current user response
 message GetMeResponse {
   User user = 1;
+  EmailVerificationStatus email_verification_status = 2; // Phase 2
 }
 
 // Update profile request
@@ -119,6 +130,8 @@ message UpdateProfileRequest {
   string first_name = 1;
   string last_name = 2;
   map<string, string> preferences = 3;
+  bool email_notifications_enabled = 4; // Phase 2
+  bool security_notifications_enabled = 5; // Phase 2
 }
 
 message UpdateProfileResponse {
@@ -129,20 +142,116 @@ message UpdateProfileResponse {
 message ChangePasswordRequest {
   string current_password = 1;
   string new_password = 2;
+  bool notify_via_email = 3; // Phase 2: Send notification email
 }
 
-// Verify email request
+// Phase 2: Email Verification Messages
+
+message SendVerificationEmailRequest {
+  // Empty - uses authenticated user context
+}
+
 message VerifyEmailRequest {
   string token = 1;
 }
 
-// Request password reset
-message RequestPasswordResetRequest {
-  string email = 1;
+message ResendVerificationEmailRequest {
+  // Empty - uses authenticated user context
 }
 
-// Reset password request
+message GetVerificationStatusRequest {
+  // Empty - uses authenticated user context
+}
+
+message GetVerificationStatusResponse {
+  EmailVerificationStatus status = 1;
+}
+
+message EmailVerificationStatus {
+  bool email_verified = 1;
+  int32 attempts = 2;
+  int32 max_attempts = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  bool is_expired = 5;
+  bool can_resend = 6;
+}
+
+// Phase 2: Password Reset Messages
+
+message RequestPasswordResetRequest {
+  string email = 1;
+  string ip_address = 2; // For security logging
+  string user_agent = 3; // For security logging
+}
+
+message VerifyPasswordResetTokenRequest {
+  string token = 1;
+}
+
+message VerifyPasswordResetTokenResponse {
+  bool is_valid = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  string email = 3; // Masked email for UI display
+}
+
 message ResetPasswordRequest {
   string token = 1;
   string new_password = 2;
+  string ip_address = 3; // For security logging
+  string user_agent = 4; // For security logging
+}
+
+// Phase 2: Security Messages
+
+message GetSecurityEventsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  SecurityEventType event_type = 3; // Filter by event type
+  google.protobuf.Timestamp from_date = 4;
+  google.protobuf.Timestamp to_date = 5;
+}
+
+message GetSecurityEventsResponse {
+  repeated SecurityEvent events = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message SecurityEvent {
+  string id = 1;
+  SecurityEventType event_type = 2;
+  string description = 3;
+  string ip_address = 4;
+  string user_agent = 5;
+  SecurityEventSeverity severity = 6;
+  bool resolved = 7;
+  google.protobuf.Timestamp created_at = 8;
+  map<string, string> metadata = 9;
+}
+
+enum SecurityEventType {
+  SECURITY_EVENT_TYPE_UNSPECIFIED = 0;
+  SECURITY_EVENT_TYPE_LOGIN_SUCCESS = 1;
+  SECURITY_EVENT_TYPE_LOGIN_FAILED = 2;
+  SECURITY_EVENT_TYPE_PASSWORD_CHANGED = 3;
+  SECURITY_EVENT_TYPE_PASSWORD_RESET_REQUESTED = 4;
+  SECURITY_EVENT_TYPE_PASSWORD_RESET_COMPLETED = 5;
+  SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_SENT = 6;
+  SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_COMPLETED = 7;
+  SECURITY_EVENT_TYPE_ACCOUNT_LOCKED = 8;
+  SECURITY_EVENT_TYPE_ACCOUNT_UNLOCKED = 9;
+  SECURITY_EVENT_TYPE_SECURITY_ALERT = 10;
+  SECURITY_EVENT_TYPE_SUSPICIOUS_ACTIVITY = 11;
+}
+
+enum SecurityEventSeverity {
+  SECURITY_EVENT_SEVERITY_UNSPECIFIED = 0;
+  SECURITY_EVENT_SEVERITY_LOW = 1;
+  SECURITY_EVENT_SEVERITY_MEDIUM = 2;
+  SECURITY_EVENT_SEVERITY_HIGH = 3;
+  SECURITY_EVENT_SEVERITY_CRITICAL = 4;
+}
+
+message UnlockAccountRequest {
+  string user_id = 1; // Admin only - unlock another user's account
 }
