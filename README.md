@@ -1,23 +1,38 @@
 ﻿# TaskMaster - Production-Ready gRPC Server with Go
 
-A high-performance, scalable gRPC task management service built with Go, featuring Ent ORM, PostgreSQL, and production-ready patterns.
+A high-performance, scalable gRPC task management service built with Go, featuring comprehensive authentication, Ent ORM, PostgreSQL, and production-ready patterns.
 
 ## 🚀 Features
 
+### Core Services
+- **🔐 Authentication Service** - JWT-based auth with user management
+- **📋 Task Management Service** - Full CRUD operations with relations
+- **👥 User Management** - Role-based access control (User, Manager, Admin)
+- **🔗 Task-User Relations** - Creator and assignee relationships
+
+### Technical Stack
 - **gRPC API** with Protocol Buffers for efficient communication
 - **Ent ORM** for type-safe database operations and automatic migrations
-- **PostgreSQL** database with connection pooling
-- **Clean Architecture** with repository pattern
+- **PostgreSQL** database with connection pooling and indexes
+- **JWT Authentication** with access/refresh token pattern
+- **bcrypt Password Hashing** with configurable requirements
+- **Clean Architecture** with repository pattern and middleware
 - **Generated Code Separation** - Clean distinction between source and generated files
 - **Hot Reload** development with Air
 - **Docker Compose** for local development
 - **Health Checks** and service reflection
 - **Structured Logging** and error handling
-- **Ready for** authentication, caching, and observability
+
+### Security & Permissions
+- **Role-based Authorization** (User/Manager/Admin)
+- **Task Ownership** - Users can only access their created/assigned tasks
+- **Protected Endpoints** with middleware-based authentication
+- **Password Security** with bcrypt and validation
+- **Token Management** with secure refresh patterns
 
 ## 📋 Prerequisites
 
-- Go 1.21+
+- Go 1.24+
 - Protocol Buffers compiler (protoc)
 - Docker & Docker Compose
 - Git
@@ -96,29 +111,31 @@ air
 taskmaster/
 ├── api/
 │   └── proto/
+│       ├── auth/v1/
+│       │   ├── auth.proto          # ✅ Auth service definitions
+│       │   └── generated/          # ❌ Generated protobuf code
 │       └── task/v1/
-│           ├── task.proto          # ✅ Source (tracked in Git)
-│           └── generated/          # ❌ Generated (not in Git)
-│               ├── task.pb.go
-│               └── task_grpc.pb.go
+│           ├── task.proto          # ✅ Task service definitions
+│           └── generated/          # ❌ Generated protobuf code
 ├── ent/
 │   ├── schema/
-│   │   └── task.go                # ✅ Source (tracked in Git)
-│   ├── generate.go                # ✅ Source (tracked in Git)
-│   └── generated/                 # ❌ Generated (not in Git)
-│       ├── client.go
-│       ├── task.go
-│       └── ...
+│   │   ├── user.go                # ✅ User entity schema
+│   │   └── task.go                # ✅ Task entity schema
+│   ├── generate.go                # ✅ Ent code generation config
+│   └── generated/                 # ❌ Generated Ent ORM code
 ├── cmd/
 │   ├── server/                    # Main server application
-│   ├── client/                    # Test client
-│   └── migrate/                   # Migration tool
+│   ├── client/                    # Test clients (auth & task)
+│   └── migrate/                   # Database migration tool
 ├── internal/
 │   ├── config/                    # Configuration management
-│   ├── database/                  # Database connection
-│   ├── repository/                # Data access layer
-│   ├── service/                   # Business logic
-│   └── middleware/                # gRPC interceptors
+│   ├── database/                  # Database connection (Ent)
+│   ├── repository/                # Data access layer (Ent-based)
+│   ├── service/                   # Business logic (Auth & Task)
+│   ├── middleware/                # gRPC interceptors (Auth & Validation)
+│   └── models/                    # Legacy models (deprecated)
+├── pkg/
+│   └── auth/                      # JWT & password utilities
 ├── scripts/                       # Utility scripts
 ├── deployments/                   # Deployment configs
 ├── .env.example                   # Environment template
@@ -134,9 +151,10 @@ taskmaster/
 
 | Type | Location | In Git? | Description |
 |------|----------|---------|-------------|
-| **Source** | `ent/schema/*.go` | ✅ Yes | Ent schema definitions |
-| **Source** | `api/proto/**/*.proto` | ✅ Yes | Protocol buffer definitions |
-| **Source** | `internal/**/*.go` | ✅ Yes | Business logic |
+| **Source** | `ent/schema/*.go` | ✅ Yes | User & Task entity definitions |
+| **Source** | `api/proto/**/*.proto` | ✅ Yes | Auth & Task service definitions |
+| **Source** | `internal/**/*.go` | ✅ Yes | Business logic & middleware |
+| **Source** | `pkg/**/*.go` | ✅ Yes | Shared utilities |
 | **Generated** | `**/generated/` | ❌ No | All generated code |
 | **Generated** | `*.pb.go` | ❌ No | Protobuf Go code |
 | **Config** | `.env` | ❌ No | Local configuration |
@@ -168,66 +186,85 @@ go run cmd/migrate/main.go
 
 # Clean generated files
 # Windows
-Remove-Item -Recurse -Force ent/generated, api/proto/task/v1/generated
+Remove-Item -Recurse -Force ent/generated, api/proto/*/v1/generated
 
 # Linux/macOS
-rm -rf ent/generated api/proto/task/v1/generated
+rm -rf ent/generated api/proto/*/v1/generated
 ```
 
 ### Modifying Schemas
 
-#### Update Ent Schema
-1. Edit `ent/schema/task.go`
+#### Update Ent Schema (Database)
+1. Edit `ent/schema/user.go` or `ent/schema/task.go`
 2. Run `.\generate.ps1` or `./generate.sh`
 3. Restart server (migrations run automatically)
 
-#### Update Proto Definitions
-1. Edit `api/proto/task/v1/task.proto`
+#### Update Proto Definitions (API)
+1. Edit `api/proto/auth/v1/auth.proto` or `api/proto/task/v1/task.proto`
 2. Run `.\generate.ps1` or `./generate.sh`
 3. Update service implementations if needed
 
-## 📡 API Endpoints
+## 📡 API Services
 
-### gRPC Services
+### 🔐 AuthService
 
-#### TaskService
-- `CreateTask` - Create a new task
-- `GetTask` - Get task by ID
-- `ListTasks` - List tasks with filtering
-- `UpdateTask` - Update existing task
-- `DeleteTask` - Delete a task
+#### Authentication Endpoints
+- `Register` - Create new user account
+- `Login` - Authenticate with email/username and password
+- `RefreshToken` - Generate new access token using refresh token
+- `Logout` - Invalidate refresh token
+
+#### User Management
+- `GetMe` - Get current authenticated user info
+- `UpdateProfile` - Update user profile (name, preferences)
+- `ChangePassword` - Change user password
+
+#### Future Features (Placeholder)
+- `VerifyEmail` - Email verification
+- `RequestPasswordReset` - Initiate password reset
+- `ResetPassword` - Complete password reset
+
+### 📋 TaskService
+
+#### Task Management
+- `CreateTask` - Create a new task (auto-assigned to creator)
+- `GetTask` - Get task by ID (with permission checks)
+- `ListTasks` - List tasks with filtering (role-based access)
+- `UpdateTask` - Update existing task (with permission checks)
+- `DeleteTask` - Delete a task (creator or admin only)
 - `WatchTasks` - Stream task events (server-streaming)
 
-### Testing the API
+#### Permission Model
+- **Users**: Can only see/modify tasks they created or are assigned to
+- **Managers**: Can see tasks from their scope
+- **Admins**: Full access to all tasks
 
-#### Using grpcurl
-```bash
-# List available services
-grpcurl -plaintext localhost:50051 list
+## 🗄️ Database Schema
 
-# Describe service
-grpcurl -plaintext localhost:50051 describe task.v1.TaskService
+### User Entity (Authentication & Authorization)
+```
+Fields:
+- ID (UUID, auto-generated)
+- Email (string, unique, required)
+- Username (string, unique, required)
+- PasswordHash (string, sensitive)
+- FirstName, LastName (optional)
+- Role (enum: user, manager, admin)
+- IsActive, EmailVerified (boolean)
+- RefreshToken (string, sensitive)
+- RefreshTokenExpiresAt (timestamp)
+- Preferences (JSON)
+- LastLogin (timestamp)
+- CreatedAt, UpdatedAt (auto-managed)
 
-# Create a task
-grpcurl -plaintext -d '{
-  "title": "Complete project",
-  "description": "Finish the gRPC implementation",
-  "priority": "PRIORITY_HIGH"
-}' localhost:50051 task.v1.TaskService/CreateTask
-
-# List tasks
-grpcurl -plaintext -d '{"page_size": 10}' \
-  localhost:50051 task.v1.TaskService/ListTasks
+Indexes:
+- email (unique)
+- username (unique)
+- email + is_active (login queries)
+- role + is_active (authorization)
 ```
 
-#### Using the Test Client
-```bash
-go run cmd/client/main.go
-```
-
-## 🗄️ Database Schema (Ent)
-
-### Task Entity
+### Task Entity (Task Management)
 ```
 Fields:
 - ID (UUID, auto-generated)
@@ -235,19 +272,87 @@ Fields:
 - Description (text, optional)
 - Status (enum: pending, in_progress, completed, cancelled)
 - Priority (enum: low, medium, high, critical)
-- AssignedTo (string, optional)
+- AssignedTo (string, optional) - Email/identifier
 - DueDate (timestamp, optional)
 - Tags ([]string)
 - Metadata (JSON)
-- CreatedAt (timestamp, auto)
-- UpdatedAt (timestamp, auto)
+- CreatedAt, UpdatedAt (auto-managed)
+
+Relations:
+- Creator (User) - Many tasks to one user
+- Assignee (User) - Many tasks to one user (optional)
+- Parent/Subtasks - Self-referencing for task hierarchy
 
 Indexes:
-- status
-- priority
-- assigned_to
+- status, priority, assigned_to
 - status + priority (composite)
-- created_at
+- created_at, due_date
+```
+
+## 🧪 Testing the API
+
+### Using the Test Clients
+
+#### Authentication Test Client
+```bash
+go run cmd/client/auth.go
+```
+Features:
+- User registration and login
+- Token refresh and logout
+- Profile updates and password changes
+- Permission testing
+
+#### Task Test Client
+```bash
+go run cmd/client/main.go
+```
+Features:
+- Task CRUD operations
+- Permission validation
+- Relationship testing
+
+### Using grpcurl
+
+#### List Services
+```bash
+grpcurl -plaintext localhost:50051 list
+```
+
+#### Authentication Examples
+```bash
+# Register a new user
+grpcurl -plaintext -d '{
+  "email": "user@example.com",
+  "username": "testuser",
+  "password": "SecurePass123!",
+  "first_name": "Test",
+  "last_name": "User"
+}' localhost:50051 auth.v1.AuthService/Register
+
+# Login
+grpcurl -plaintext -d '{
+  "email": "user@example.com",
+  "password": "SecurePass123!"
+}' localhost:50051 auth.v1.AuthService/Login
+```
+
+#### Task Management Examples (with auth token)
+```bash
+# Create a task (requires auth header)
+grpcurl -plaintext \
+  -H "authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -d '{
+    "title": "Complete project",
+    "description": "Finish the gRPC implementation",
+    "priority": "PRIORITY_HIGH"
+  }' localhost:50051 task.v1.TaskService/CreateTask
+
+# List tasks
+grpcurl -plaintext \
+  -H "authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -d '{"page_size": 10}' \
+  localhost:50051 task.v1.TaskService/ListTasks
 ```
 
 ## 🐳 Docker Services
@@ -274,6 +379,41 @@ docker-compose down -v
 docker-compose up -d
 ```
 
+## 🔐 Security Features
+
+### Implemented
+- **JWT Authentication** with access/refresh token pattern
+- **bcrypt Password Hashing** with configurable strength
+- **Role-based Authorization** (User/Manager/Admin)
+- **Input Validation** middleware
+- **Password Requirements** (length, complexity)
+- **Token Expiration** and secure refresh
+- **Sensitive Field Protection** (passwords, tokens not logged)
+
+### Security Configuration
+```go
+// Password Requirements (configurable)
+MinLength: 8 characters
+RequireUpper: true
+RequireLower: true  
+RequireNumber: true
+RequireSpecial: false (configurable)
+
+// JWT Settings
+AccessTokenDuration: 15 minutes (configurable)
+RefreshTokenDuration: 7 days (configurable)
+Signing Algorithm: HS256
+```
+
+## ⚡ Performance Features
+
+- **Connection Pooling**: Configurable database connection limits
+- **Efficient Queries**: Ent ORM generates optimized SQL with proper indexes
+- **Lazy Loading**: Relations loaded only when needed
+- **Batch Operations**: Support for bulk task operations
+- **Transaction Support**: Atomic multi-operation updates
+- **Prepared for Caching**: Redis integration ready
+
 ## 🚀 Production Deployment
 
 ### Building for Production
@@ -285,40 +425,30 @@ docker build -t taskmaster:latest .
 docker run -p 50051:50051 \
   -e DB_HOST=your-db-host \
   -e DB_PASSWORD=your-password \
+  -e JWT_ACCESS_SECRET=your-secret \
   taskmaster:latest
 ```
 
 ### Environment Variables
 See `.env.example` for all available configuration options.
 
-Key variables:
+Key production variables:
 - `GRPC_PORT` - gRPC server port (default: 50051)
 - `DB_*` - PostgreSQL connection settings
-- `REDIS_*` - Redis connection settings (for future use)
-- `JWT_SECRET` - JWT signing key (for future auth)
+- `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` - **Must be changed in production**
+- `JWT_ACCESS_TOKEN_DURATION`, `JWT_REFRESH_TOKEN_DURATION` - Token lifetimes
 - `ENVIRONMENT` - development/staging/production
 
-## 📈 Performance
+⚠️ **Security Warning**: Change all default secrets before production deployment!
 
-- **Connection Pooling**: Configurable database connection limits
-- **Efficient Queries**: Ent ORM generates optimized SQL
-- **Indexed Columns**: Fast queries on common filters
-- **Prepared for Caching**: Redis integration ready
+## 🔍 Observability (Ready for Implementation)
 
-## 🔐 Security (Roadmap)
-
-- [ ] JWT authentication
-- [ ] Rate limiting per client
-- [ ] mTLS for service communication
-- [ ] API key management
-- [ ] RBAC (Role-Based Access Control)
-
-## 🔍 Observability (Roadmap)
-
-- [x] Health checks
+- [x] Health checks (`/grpc.health.v1.Health/Check`)
+- [x] gRPC reflection for development
+- [x] Structured logging with request tracing
+- [x] User context in logs
 - [ ] Prometheus metrics
 - [ ] Jaeger distributed tracing
-- [ ] Structured logging with zerolog
 - [ ] Custom Grafana dashboards
 
 ## 🧪 Testing
@@ -340,33 +470,35 @@ go test -v ./...
 
 ## 🛣️ Roadmap
 
-### Phase 1 - Core (Completed ✅)
-- [x] gRPC server setup
-- [x] Ent ORM integration
-- [x] CRUD operations
-- [x] PostgreSQL database
+### ✅ Phase 1 - Core (Completed)
+- [x] gRPC server with authentication and task services
+- [x] Ent ORM with User and Task entities
+- [x] JWT authentication with refresh tokens
+- [x] Role-based authorization
+- [x] CRUD operations with permissions
+- [x] PostgreSQL database with proper relations
 - [x] Docker Compose setup
-- [x] Clean code organization
+- [x] Comprehensive test clients
 
-### Phase 2 - Enhancement (Current)
-- [ ] JWT authentication
-- [ ] User management
-- [ ] Request validation middleware
-- [ ] Enhanced error handling
-- [ ] Unit tests
+### 🔄 Phase 2 - Enhancement (Current)
+- [ ] Email verification system
+- [ ] Password reset functionality
+- [ ] Request validation enhancements
+- [ ] Comprehensive unit tests
+- [ ] API documentation generation
 
-### Phase 3 - Scalability
+### 🔮 Phase 3 - Scalability
 - [ ] Redis caching layer
 - [ ] Prometheus metrics
 - [ ] Jaeger tracing
 - [ ] Rate limiting
-- [ ] Circuit breaker
+- [ ] Circuit breaker pattern
 
-### Phase 4 - Production
+### 🚀 Phase 4 - Production
 - [ ] Kubernetes manifests
 - [ ] Helm charts
 - [ ] CI/CD pipeline (GitHub Actions)
-- [ ] API Gateway
+- [ ] API Gateway integration
 - [ ] GraphQL layer
 
 ## 🤝 Contributing
@@ -384,6 +516,7 @@ go test -v ./...
 - Run `go fmt` before committing
 - Add tests for new features
 - Update documentation as needed
+- Follow the existing code style and patterns
 
 ## 📝 Common Issues & Solutions
 
@@ -402,8 +535,15 @@ docker-compose up -d
 
 ### Import errors after pulling updates
 ```bash
-# Solution: Regenerate code
+# Solution: Regenerate code and update dependencies
 ./generate.ps1  # or ./generate.sh
+go mod tidy
+```
+
+### Authentication failures in tests
+```bash
+# Solution: Check JWT secrets in .env
+# Make sure JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are set
 ```
 
 ## 📚 Learning Resources
@@ -411,6 +551,7 @@ docker-compose up -d
 - [gRPC-Go Documentation](https://grpc.io/docs/languages/go/)
 - [Ent ORM Documentation](https://entgo.io/docs/getting-started/)
 - [Protocol Buffers Guide](https://protobuf.dev/programming-guides/proto3/)
+- [JWT Best Practices](https://tools.ietf.org/html/rfc7519)
 - [Docker Compose Documentation](https://docs.docker.com/compose/)
 
 ## 📄 License
@@ -432,3 +573,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ---
 
 **Happy Coding! 🚀**
+
+*Built with ❤️ using Go, gRPC, and Ent ORM*
