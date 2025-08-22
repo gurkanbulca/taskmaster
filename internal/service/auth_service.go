@@ -1,4 +1,4 @@
-// internal/service/auth_service.go - Updated with configurable security settings
+// internal/service/auth_service.go - Complete with Security Event Retrieval
 package service
 
 import (
@@ -17,6 +17,7 @@ import (
 
 	authv1 "github.com/gurkanbulca/taskmaster/api/proto/auth/v1/generated"
 	ent "github.com/gurkanbulca/taskmaster/ent/generated"
+	"github.com/gurkanbulca/taskmaster/ent/generated/securityevent"
 	"github.com/gurkanbulca/taskmaster/ent/generated/user"
 	"github.com/gurkanbulca/taskmaster/internal/config"
 	"github.com/gurkanbulca/taskmaster/internal/middleware"
@@ -32,7 +33,8 @@ type AuthService struct {
 	emailVerificationService *EmailVerificationService
 	passwordResetService     *PasswordResetService
 	securityLogger           *SecurityLogger
-	securityConfig           config.SecurityConfig // Add security config
+	securityService          *SecurityService // Add security service for event retrieval
+	securityConfig           config.SecurityConfig
 }
 
 // NewAuthService creates a new authentication service with configurable security settings
@@ -42,7 +44,7 @@ func NewAuthService(
 	emailVerificationService *EmailVerificationService,
 	passwordResetService *PasswordResetService,
 	securityLogger *SecurityLogger,
-	securityConfig config.SecurityConfig, // Add security config parameter
+	securityConfig config.SecurityConfig,
 ) *AuthService {
 	return &AuthService{
 		client:                   client,
@@ -51,6 +53,7 @@ func NewAuthService(
 		emailVerificationService: emailVerificationService,
 		passwordResetService:     passwordResetService,
 		securityLogger:           securityLogger,
+		securityService:          NewSecurityService(client), // Initialize security service
 		securityConfig:           securityConfig,
 	}
 }
@@ -360,8 +363,6 @@ func (s *AuthService) RefreshToken(ctx context.Context, req *authv1.RefreshToken
 	}, nil
 }
 
-// [Rest of the methods remain the same...]
-
 // Logout invalidates the user's refresh token
 func (s *AuthService) Logout(ctx context.Context, req *authv1.LogoutRequest) (*emptypb.Empty, error) {
 	if req.RefreshToken == "" {
@@ -656,28 +657,98 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *authv1.ResetPasswo
 	return &emptypb.Empty{}, nil
 }
 
-// Phase 2: Security Methods
+// Phase 2: Security Methods - COMPLETE IMPLEMENTATION
 
 // GetSecurityEvents returns security events for the authenticated user
 func (s *AuthService) GetSecurityEvents(ctx context.Context, req *authv1.GetSecurityEventsRequest) (*authv1.GetSecurityEventsResponse, error) {
 	// Get user ID from context
-	//userID, ok := middleware.GetUserIDFromContext(ctx)
-	//if !ok {
-	//	return nil, status.Error(codes.Unauthenticated, "user not authenticated")
-	//}
-	//
-	//userUUID, err := uuid.Parse(userID)
-	//if err != nil {
-	//	return nil, status.Error(codes.InvalidArgument, "invalid user ID")
-	//}
+	userID, ok := middleware.GetUserIDFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
 
-	// TODO: Implement security event retrieval
-	// This would query the SecurityEvent table for the user's events
+	// Get user role to check if they're admin
+	userRole, _ := middleware.GetUserRoleFromContext(ctx)
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid user ID")
+	}
+
+	// Build query
+	query := s.client.SecurityEvent.Query()
+
+	// If not admin, only show their own events
+	if userRole != "admin" {
+		query = query.Where(securityevent.UserIDEQ(userUUID))
+	}
+
+	// Apply filters
+	if req.EventType != authv1.SecurityEventType_SECURITY_EVENT_TYPE_UNSPECIFIED {
+		eventType := convertProtoEventTypeToString(req.EventType)
+		if entEventType, err := security.ParseEventType(eventType); err == nil {
+			query = query.Where(securityevent.EventTypeEQ(entEventType))
+		}
+	}
+
+	// Apply date filters
+	if req.FromDate != nil {
+		query = query.Where(securityevent.CreatedAtGTE(req.FromDate.AsTime()))
+	}
+	if req.ToDate != nil {
+		query = query.Where(securityevent.CreatedAtLTE(req.ToDate.AsTime()))
+	}
+
+	// Get total count
+	totalCount, err := query.Count(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to count security events")
+	}
+
+	// Apply pagination
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	// TODO: Implement proper pagination with page tokens
+	// For now, use simple offset-based pagination
+	offset := 0
+	if req.PageToken != "" {
+		// Parse page token (simplified - in production, use proper token encoding)
+		fmt.Sscanf(req.PageToken, "offset:%d", &offset)
+	}
+
+	query = query.
+		Limit(int(pageSize)).
+		Offset(offset).
+		Order(ent.Desc(securityevent.FieldCreatedAt))
+
+	// Execute query
+	events, err := query.All(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to get security events")
+	}
+
+	// Convert to proto
+	protoEvents := make([]*authv1.SecurityEvent, len(events))
+	for i, event := range events {
+		protoEvents[i] = s.convertSecurityEventToProto(event)
+	}
+
+	// Create next page token
+	nextPageToken := ""
+	if len(events) == int(pageSize) && offset+int(pageSize) < totalCount {
+		nextPageToken = fmt.Sprintf("offset:%d", offset+int(pageSize))
+	}
 
 	return &authv1.GetSecurityEventsResponse{
-		Events:        []*authv1.SecurityEvent{},
-		NextPageToken: "",
-		TotalCount:    0,
+		Events:        protoEvents,
+		NextPageToken: nextPageToken,
+		TotalCount:    int32(totalCount),
 	}, nil
 }
 
@@ -766,6 +837,29 @@ func (s *AuthService) convertUserToProto(u *ent.User) *authv1.User {
 	return proto
 }
 
+func (s *AuthService) convertSecurityEventToProto(event *ent.SecurityEvent) *authv1.SecurityEvent {
+	proto := &authv1.SecurityEvent{
+		Id:          event.ID.String(),
+		EventType:   convertStringEventTypeToProto(string(event.EventType)),
+		Description: event.Description,
+		IpAddress:   event.IPAddress,
+		UserAgent:   event.UserAgent,
+		Severity:    convertStringSeverityToProto(string(event.Severity)),
+		Resolved:    event.Resolved,
+		CreatedAt:   timestamppb.New(event.CreatedAt),
+		Metadata:    make(map[string]string),
+	}
+
+	// Convert metadata from map[string]interface{} to map[string]string
+	if event.Metadata != nil {
+		for k, v := range event.Metadata {
+			proto.Metadata[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	return proto
+}
+
 func convertRoleToProto(role user.Role) authv1.UserRole {
 	switch role {
 	case user.RoleAdmin:
@@ -776,5 +870,78 @@ func convertRoleToProto(role user.Role) authv1.UserRole {
 		return authv1.UserRole_USER_ROLE_USER
 	default:
 		return authv1.UserRole_USER_ROLE_UNSPECIFIED
+	}
+}
+
+func convertStringEventTypeToProto(eventType string) authv1.SecurityEventType {
+	switch eventType {
+	case "login_success":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_LOGIN_SUCCESS
+	case "login_failed":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_LOGIN_FAILED
+	case "password_changed":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_CHANGED
+	case "password_reset_requested":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_RESET_REQUESTED
+	case "password_reset_completed":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_RESET_COMPLETED
+	case "email_verification_sent":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_SENT
+	case "email_verification_completed":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_COMPLETED
+	case "account_locked":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_ACCOUNT_LOCKED
+	case "account_unlocked":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_ACCOUNT_UNLOCKED
+	case "security_alert":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_SECURITY_ALERT
+	case "suspicious_activity":
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_SUSPICIOUS_ACTIVITY
+	default:
+		return authv1.SecurityEventType_SECURITY_EVENT_TYPE_UNSPECIFIED
+	}
+}
+
+func convertProtoEventTypeToString(eventType authv1.SecurityEventType) string {
+	switch eventType {
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_LOGIN_SUCCESS:
+		return security.EventTypeLoginSuccess
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_LOGIN_FAILED:
+		return security.EventTypeLoginFailed
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_CHANGED:
+		return security.EventTypePasswordChanged
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_RESET_REQUESTED:
+		return security.EventTypePasswordResetRequested
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_PASSWORD_RESET_COMPLETED:
+		return security.EventTypePasswordResetCompleted
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_SENT:
+		return security.EventTypeEmailVerificationSent
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_EMAIL_VERIFICATION_COMPLETED:
+		return security.EventTypeEmailVerificationCompleted
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_ACCOUNT_LOCKED:
+		return security.EventTypeAccountLocked
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_ACCOUNT_UNLOCKED:
+		return security.EventTypeAccountUnlocked
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_SECURITY_ALERT:
+		return security.EventTypeSecurityAlert
+	case authv1.SecurityEventType_SECURITY_EVENT_TYPE_SUSPICIOUS_ACTIVITY:
+		return security.EventTypeSuspiciousActivity
+	default:
+		return ""
+	}
+}
+
+func convertStringSeverityToProto(severity string) authv1.SecurityEventSeverity {
+	switch severity {
+	case "low":
+		return authv1.SecurityEventSeverity_SECURITY_EVENT_SEVERITY_LOW
+	case "medium":
+		return authv1.SecurityEventSeverity_SECURITY_EVENT_SEVERITY_MEDIUM
+	case "high":
+		return authv1.SecurityEventSeverity_SECURITY_EVENT_SEVERITY_HIGH
+	case "critical":
+		return authv1.SecurityEventSeverity_SECURITY_EVENT_SEVERITY_CRITICAL
+	default:
+		return authv1.SecurityEventSeverity_SECURITY_EVENT_SEVERITY_UNSPECIFIED
 	}
 }
