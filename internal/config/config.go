@@ -1,4 +1,4 @@
-// internal/config/config.go - Updated for Phase 2
+// internal/config/config.go - Updated for Phase 2 with configurable security settings
 package config
 
 import (
@@ -67,8 +67,8 @@ type EmailConfig struct {
 
 // Phase 2: Security Configuration
 type SecurityConfig struct {
-	MaxLoginAttempts             int
-	AccountLockoutDuration       time.Duration
+	MaxLoginAttempts             int           // Max failed login attempts before lockout
+	AccountLockoutDuration       time.Duration // How long to lock the account
 	MaxEmailVerificationAttempts int
 	MaxPasswordResetAttempts     int
 	PasswordResetRateLimit       time.Duration
@@ -134,7 +134,7 @@ func Load() (*Config, error) {
 			PasswordResetTokenDuration: getEnvAsDuration("PASSWORD_RESET_TOKEN_DURATION", 1*time.Hour),
 			RateLimitPerHour:           getEnvAsInt("EMAIL_RATE_LIMIT_PER_HOUR", 5),
 		},
-		// Phase 2: Security Configuration
+		// Phase 2: Security Configuration with configurable failed attempts and lockout duration
 		Security: SecurityConfig{
 			MaxLoginAttempts:             getEnvAsInt("MAX_LOGIN_ATTEMPTS", 5),
 			AccountLockoutDuration:       getEnvAsDuration("ACCOUNT_LOCKOUT_DURATION", 15*time.Minute),
@@ -229,6 +229,10 @@ func (c *Config) ValidateConfig() error {
 
 	if c.Security.MaxLoginAttempts < 1 {
 		return fmt.Errorf("max login attempts must be at least 1")
+	}
+
+	if c.Security.AccountLockoutDuration < 1*time.Minute {
+		return fmt.Errorf("account lockout duration must be at least 1 minute")
 	}
 
 	return nil

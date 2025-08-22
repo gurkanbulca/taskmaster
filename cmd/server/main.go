@@ -1,4 +1,4 @@
-// cmd/server/main.go - Integration Example for Phase 2
+// cmd/server/main.go - Updated with configurable security settings
 package main
 
 import (
@@ -110,7 +110,17 @@ func main() {
 	passwordResetService := service.NewPasswordResetService(entClient, emailService, auth.NewPasswordManager(), securityLogger)
 
 	taskRepo := repository.NewEntTaskRepository(entClient)
-	authService := service.NewAuthService(entClient, tokenManager, emailVerificationService, passwordResetService, securityLogger)
+
+	// Pass security config to auth service
+	authService := service.NewAuthService(
+		entClient,
+		tokenManager,
+		emailVerificationService,
+		passwordResetService,
+		securityLogger,
+		cfg.Security, // Pass the security configuration
+	)
+
 	taskService := service.NewTaskService(taskRepo)
 
 	// Initialize middleware
@@ -173,6 +183,13 @@ func main() {
 		log.Println("   • Password reset functionality")
 		log.Println("   • Security event logging")
 		log.Println("   • Enhanced validation")
+		log.Println("")
+		log.Println("🔐 Security Configuration:")
+		log.Printf("   • Max login attempts: %d", cfg.Security.MaxLoginAttempts)
+		log.Printf("   • Account lockout duration: %v", cfg.Security.AccountLockoutDuration)
+		log.Printf("   • Password reset rate limit: %v", cfg.Security.PasswordResetRateLimit)
+		log.Printf("   • Email verification required: %v", cfg.Security.RequireEmailVerification)
+		log.Printf("   • Security notifications: %v", cfg.Security.EnableSecurityNotifications)
 		log.Println("")
 		log.Println("🧪 Test commands:")
 		log.Printf("   grpcurl -plaintext localhost:%s list", cfg.Server.GRPCPort)
