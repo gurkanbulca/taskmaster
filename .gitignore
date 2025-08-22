@@ -1,0 +1,102 @@
+# .gitignore
+
+# ====================
+# Generated Directories
+# ====================
+# All generated code goes in 'generated' directories
+**/generated/
+
+# ====================
+# Go
+# ====================
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test files
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Dependencies
+vendor/
+
+# Go workspace
+go.work
+go.work.sum
+
+# ====================
+# Environment
+# ====================
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# ====================
+# IDE
+# ====================
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# ====================
+# OS Files
+# ====================
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+._*
+
+# Linux
+.directory
+
+# ====================
+# Development
+# ====================
+# Air hot reload
+tmp/
+.air.toml.tmp
+
+# Debug
+debug
+__debug_bin
+
+# Logs
+*.log
+logs/
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# ====================
+# Security
+# ====================
+*.pem
+*.key
+*.crt
+secrets/
+
+# ====================
+# Temporary
+# ====================
+*.tmp
+*.temp
+*.bak
+*.backup
+.cache/
