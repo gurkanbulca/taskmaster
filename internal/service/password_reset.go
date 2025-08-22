@@ -72,9 +72,9 @@ func (s *PasswordResetService) RequestPasswordReset(ctx context.Context, email s
 		if ent.IsNotFound(err) {
 			// Don't reveal whether user exists - return success for security
 			// Log the attempt for monitoring
-			if err := s.logSecurityEvent(ctx, uuid.Nil, "password_reset_attempted_invalid_email",
+			if err := s.securityLogger.LogSystemFromContext(ctx, security.EventTypeSuspiciousActivity,
 				fmt.Sprintf("Password reset attempted for non-existent email: %s", email),
-				"medium", ipAddress, userAgent); err != nil {
+				security.SeverityMedium); err != nil {
 				// Log error but continue
 			}
 			return nil
@@ -87,8 +87,8 @@ func (s *PasswordResetService) RequestPasswordReset(ctx context.Context, email s
 		timeUntilNextRequest := foundUser.PasswordResetExpiresAt.Add(-PasswordResetTokenDuration).Add(PasswordResetRateLimit)
 		if time.Now().Before(timeUntilNextRequest) {
 			// Log the rate limit violation
-			if err := s.securityService.LogUserSecurityEvent(ctx, foundUser.ID, security.EventTypeSuspiciousActivity,
-				"Password reset request rate limited", security.SeverityMedium, ipAddress, userAgent); err != nil {
+			if err := s.securityLogger.LogFromContext(ctx, foundUser.ID, security.EventTypeSuspiciousActivity,
+				"Password reset request rate limited", security.SeverityMedium); err != nil {
 				// Log error but continue
 			}
 			return status.Error(codes.ResourceExhausted, "please wait before requesting another password reset")
@@ -100,14 +100,17 @@ func (s *PasswordResetService) RequestPasswordReset(ctx context.Context, email s
 		// Check if it's been 24 hours since last attempt
 		if foundUser.PasswordResetExpiresAt != nil && time.Since(*foundUser.PasswordResetExpiresAt) < 24*time.Hour {
 			// Log the attempt limit violation
-			if err := s.logUserSecurityEvent(ctx, foundUser.ID, "password_reset_attempts_exceeded",
-				"Password reset attempts limit exceeded", "high", ipAddress, userAgent); err != nil {
+			if err := s.securityLogger.LogFromContext(ctx, foundUser.ID, security.EventTypeSuspiciousActivity,
+				"Password reset attempts limit exceeded", security.SeverityHigh); err != nil {
 				// Log error but continue
 			}
 			return status.Error(codes.ResourceExhausted, "maximum password reset attempts exceeded for today")
 		}
 		// Reset attempts if it's been 24 hours
-		foundUser = foundUser.Update().SetPasswordResetAttempts(0).SaveX(ctx)
+		foundUser, err = foundUser.Update().SetPasswordResetAttempts(0).Save(ctx)
+		if err != nil {
+			return status.Error(codes.Internal, "failed to update user")
+		}
 	}
 
 	// Generate reset token
@@ -131,16 +134,15 @@ func (s *PasswordResetService) RequestPasswordReset(ctx context.Context, email s
 	// Send password reset email
 	if err := s.emailService.SendPasswordResetEmail(ctx, updatedUser, token); err != nil {
 		// Log error but don't expose email system details
-		if err := s.securityService.LogUserSecurityEvent(ctx, foundUser.ID, security.EventTypeSecurityAlert,
-			"Failed to send password reset email", security.SeverityHigh, ipAddress, userAgent); err != nil {
+		if err := s.securityLogger.LogFromContext(ctx, foundUser.ID, security.EventTypeSecurityAlert,
+			"Failed to send password reset email", security.SeverityHigh); err != nil {
 			// Log error but continue
 		}
 		return status.Error(codes.Internal, "failed to send password reset email")
 	}
 
 	// Log successful password reset request
-	if err := s.securityService.LogUserSecurityEvent(ctx, foundUser.ID, security.EventTypePasswordResetRequested,
-		"Password reset email sent", security.SeverityLow, ipAddress, userAgent); err != nil {
+	if err := s.securityLogger.LogPasswordResetRequested(ctx, foundUser.ID); err != nil {
 		// Log error but don't fail the operation
 	}
 

@@ -4,7 +4,6 @@ package middleware
 import (
 	"context"
 	"net"
-	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"

@@ -1,4 +1,4 @@
-// internal/middleware/auth.go
+// internal/middleware/auth.go - Updated with Stream method
 package middleware
 
 import (
@@ -61,6 +61,35 @@ func (a *UpdatedAuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 	}
 }
 
+// Stream returns a stream server interceptor for authentication
+func (a *UpdatedAuthInterceptor) Stream() grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		stream grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		// Check if method requires authentication
+		if a.publicMethods[info.FullMethod] {
+			return handler(srv, stream)
+		}
+
+		// Extract and validate token
+		newCtx, err := a.authenticate(stream.Context())
+		if err != nil {
+			return err
+		}
+
+		// Wrap the stream with authenticated context
+		wrappedStream := &authenticatedServerStream{
+			ServerStream: stream,
+			ctx:          newCtx,
+		}
+
+		return handler(srv, wrappedStream)
+	}
+}
+
 // authenticate extracts and validates the JWT token from metadata
 func (a *UpdatedAuthInterceptor) authenticate(ctx context.Context) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -92,4 +121,14 @@ func (a *UpdatedAuthInterceptor) authenticate(ctx context.Context) (context.Cont
 	ctx = context.WithValue(ctx, ContextKeyUserRole, claims.Role)
 
 	return ctx, nil
+}
+
+// authenticatedServerStream wraps grpc.ServerStream with authenticated context
+type authenticatedServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *authenticatedServerStream) Context() context.Context {
+	return s.ctx
 }

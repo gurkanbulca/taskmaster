@@ -15,7 +15,6 @@ import (
 	ent "github.com/gurkanbulca/taskmaster/ent/generated"
 	"github.com/gurkanbulca/taskmaster/ent/generated/user"
 	"github.com/gurkanbulca/taskmaster/pkg/email"
-	"github.com/gurkanbulca/taskmaster/pkg/security"
 )
 
 const (
@@ -237,23 +236,23 @@ func (s *EmailVerificationService) GetVerificationStatus(ctx context.Context, us
 		return nil, status.Error(codes.Internal, "failed to get user")
 	}
 
-	status := &EmailVerificationStatus{
+	verificationStatus := &EmailVerificationStatus{
 		EmailVerified: foundUser.EmailVerified,
 		Attempts:      foundUser.EmailVerificationAttempts,
 		MaxAttempts:   MaxEmailVerificationAttempts,
 	}
 
 	if foundUser.EmailVerificationExpiresAt != nil {
-		status.ExpiresAt = foundUser.EmailVerificationExpiresAt
-		status.IsExpired = foundUser.EmailVerificationExpiresAt.Before(time.Now())
+		verificationStatus.ExpiresAt = foundUser.EmailVerificationExpiresAt
+		verificationStatus.IsExpired = foundUser.EmailVerificationExpiresAt.Before(time.Now())
 	}
 
-	status.CanResend = !foundUser.EmailVerified &&
+	verificationStatus.CanResend = !foundUser.EmailVerified &&
 		foundUser.EmailVerificationAttempts < MaxEmailVerificationAttempts &&
 		(foundUser.EmailVerificationExpiresAt == nil ||
 			time.Now().After(foundUser.EmailVerificationExpiresAt.Add(-EmailVerificationTokenDuration).Add(1*time.Hour)))
 
-	return status, nil
+	return verificationStatus, nil
 }
 
 // generateVerificationToken generates a cryptographically secure verification token
@@ -263,18 +262,6 @@ func (s *EmailVerificationService) generateVerificationToken() (string, error) {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
-}
-
-// logSecurityEvent logs a security event for the user
-func (s *EmailVerificationService) logSecurityEvent(ctx context.Context, userID uuid.UUID, eventType, description, severity string) error {
-	_, err := s.client.SecurityEvent.Create().
-		SetUserID(userID).
-		SetEventType(eventType).
-		SetDescription(description).
-		SetSeverity(severity).
-		Save(ctx)
-
-	return err
 }
 
 // EmailVerificationStatus represents the email verification status

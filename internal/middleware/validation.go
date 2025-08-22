@@ -1,4 +1,4 @@
-// internal/middleware/validation.go
+// internal/middleware/validation.go - Updated with Stream method
 package middleware
 
 import (
@@ -78,6 +78,22 @@ func (v *EnhancedValidationInterceptor) Unary() grpc.UnaryServerInterceptor {
 		}
 
 		return handler(ctx, req)
+	}
+}
+
+// Stream returns a stream server interceptor for enhanced validation
+func (v *EnhancedValidationInterceptor) Stream() grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		stream grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		// For streaming endpoints, we typically validate the initial request
+		// Since WatchTasks doesn't have complex validation needs, we just pass through
+		// If you need to validate streaming requests, you would wrap the stream here
+
+		return handler(srv, stream)
 	}
 }
 

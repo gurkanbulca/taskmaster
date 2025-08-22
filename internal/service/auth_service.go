@@ -1,4 +1,4 @@
-// internal/service/auth_service.go
+// internal/service/auth_service.go - Updated for Phase 2
 package service
 
 import (
@@ -18,22 +18,36 @@ import (
 	authv1 "github.com/gurkanbulca/taskmaster/api/proto/auth/v1/generated"
 	ent "github.com/gurkanbulca/taskmaster/ent/generated"
 	"github.com/gurkanbulca/taskmaster/ent/generated/user"
+	"github.com/gurkanbulca/taskmaster/internal/middleware"
 	"github.com/gurkanbulca/taskmaster/pkg/auth"
+	"github.com/gurkanbulca/taskmaster/pkg/security"
 )
 
 type AuthService struct {
 	authv1.UnimplementedAuthServiceServer
-	client          *ent.Client
-	tokenManager    *auth.TokenManager
-	passwordManager *auth.PasswordManager
+	client                   *ent.Client
+	tokenManager             *auth.TokenManager
+	passwordManager          *auth.PasswordManager
+	emailVerificationService *EmailVerificationService
+	passwordResetService     *PasswordResetService
+	securityLogger           *SecurityLogger
 }
 
-// NewAuthService creates a new authentication service
-func NewAuthService(client *ent.Client, tokenManager *auth.TokenManager) *AuthService {
+// NewAuthService creates a new authentication service with Phase 2 features
+func NewAuthService(
+	client *ent.Client,
+	tokenManager *auth.TokenManager,
+	emailVerificationService *EmailVerificationService,
+	passwordResetService *PasswordResetService,
+	securityLogger *SecurityLogger,
+) *AuthService {
 	return &AuthService{
-		client:          client,
-		tokenManager:    tokenManager,
-		passwordManager: auth.NewPasswordManager(),
+		client:                   client,
+		tokenManager:             tokenManager,
+		passwordManager:          auth.NewPasswordManager(),
+		emailVerificationService: emailVerificationService,
+		passwordResetService:     passwordResetService,
+		securityLogger:           securityLogger,
 	}
 }
 
@@ -78,6 +92,7 @@ func (s *AuthService) Register(ctx context.Context, req *authv1.RegisterRequest)
 		SetRole(user.RoleUser).
 		SetIsActive(true).
 		SetEmailVerified(false).
+		SetPasswordChangedAt(time.Now()).
 		Save(ctx)
 
 	if err != nil {
@@ -105,11 +120,23 @@ func (s *AuthService) Register(ctx context.Context, req *authv1.RegisterRequest)
 		return nil, status.Error(codes.Internal, "failed to save refresh token")
 	}
 
+	// Send verification email if requested
+	emailVerificationRequired := false
+	if req.SendVerificationEmail {
+		if err := s.emailVerificationService.SendVerificationEmail(ctx, newUser.ID.String()); err != nil {
+			// Log error but don't fail registration
+			log.Printf("Failed to send verification email: %v", err)
+		} else {
+			emailVerificationRequired = true
+		}
+	}
+
 	return &authv1.RegisterResponse{
-		User:         s.convertUserToProto(newUser),
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    expiresIn,
+		User:                      s.convertUserToProto(newUser),
+		AccessToken:               accessToken,
+		RefreshToken:              refreshToken,
+		ExpiresIn:                 expiresIn,
+		EmailVerificationRequired: emailVerificationRequired,
 	}, nil
 }
 
@@ -120,29 +147,70 @@ func (s *AuthService) Login(ctx context.Context, req *authv1.LoginRequest) (*aut
 		return nil, status.Error(codes.InvalidArgument, "email and password are required")
 	}
 
+	// Get client info from context
+	clientInfo := middleware.GetClientInfoFromContext(ctx)
+
 	// Find user by email or username
 	loginID := strings.ToLower(req.Email)
 	foundUser, err := s.client.User.Query().
 		Where(
-			user.And(
-				user.Or(
-					user.EmailEQ(loginID),
-					user.UsernameEQ(loginID),
-				),
-				user.IsActiveEQ(true),
+			user.Or(
+				user.EmailEQ(loginID),
+				user.UsernameEQ(loginID),
 			),
 		).
 		Only(ctx)
 
 	if err != nil {
 		if ent.IsNotFound(err) {
+			// Log failed login attempt
+			if err := s.securityLogger.LogLoginFailed(ctx, loginID, "user not found"); err != nil {
+				// Log error but continue
+			}
 			return nil, status.Error(codes.Unauthenticated, "invalid credentials")
 		}
 		return nil, status.Error(codes.Internal, "failed to find user")
 	}
 
+	// Check if account is locked
+	if foundUser.AccountLockedUntil != nil && foundUser.AccountLockedUntil.After(time.Now()) {
+		return &authv1.LoginResponse{
+			AccountLocked: true,
+			LockedUntil:   timestamppb.New(*foundUser.AccountLockedUntil),
+		}, status.Error(codes.PermissionDenied, "account is locked")
+	}
+
+	// Check if account is active
+	if !foundUser.IsActive {
+		return nil, status.Error(codes.PermissionDenied, "account is deactivated")
+	}
+
 	// Verify password
 	if err := s.passwordManager.ComparePassword(foundUser.PasswordHash, req.Password); err != nil {
+		// Increment failed login attempts
+		failedAttempts := foundUser.FailedLoginAttempts + 1
+		update := foundUser.Update().SetFailedLoginAttempts(failedAttempts)
+
+		// Lock account if max attempts exceeded
+		if failedAttempts >= 5 { // TODO: Make this configurable
+			lockUntil := time.Now().Add(15 * time.Minute) // TODO: Make this configurable
+			update = update.SetAccountLockedUntil(lockUntil)
+
+			// Log account locked event
+			if err := s.securityLogger.LogAccountLocked(ctx, foundUser.ID, "max login attempts exceeded"); err != nil {
+				// Log error but continue
+			}
+		}
+
+		if _, err := update.Save(ctx); err != nil {
+			log.Printf("Failed to update failed login attempts: %v", err)
+		}
+
+		// Log failed login
+		if err := s.securityLogger.LogLoginFailed(ctx, loginID, "invalid password"); err != nil {
+			// Log error but continue
+		}
+
 		return nil, status.Error(codes.Unauthenticated, "invalid credentials")
 	}
 
@@ -157,22 +225,32 @@ func (s *AuthService) Login(ctx context.Context, req *authv1.LoginRequest) (*aut
 		return nil, status.Error(codes.Internal, "failed to generate tokens")
 	}
 
-	// Update user with refresh token and last login
+	// Update user with refresh token, last login, and reset failed attempts
 	foundUser, err = foundUser.Update().
 		SetRefreshToken(refreshToken).
 		SetRefreshTokenExpiresAt(time.Now().Add(7 * 24 * time.Hour)).
 		SetLastLogin(time.Now()).
+		SetLastLoginIP(clientInfo.IPAddress).
+		SetFailedLoginAttempts(0).
+		ClearAccountLockedUntil().
 		Save(ctx)
 
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to update user")
 	}
 
+	// Log successful login
+	if err := s.securityLogger.LogLoginSuccess(ctx, foundUser.ID); err != nil {
+		// Log error but don't fail login
+	}
+
 	return &authv1.LoginResponse{
-		User:         s.convertUserToProto(foundUser),
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    expiresIn,
+		User:                      s.convertUserToProto(foundUser),
+		AccessToken:               accessToken,
+		RefreshToken:              refreshToken,
+		ExpiresIn:                 expiresIn,
+		EmailVerificationRequired: !foundUser.EmailVerified,
+		AccountLocked:             false,
 	}, nil
 }
 
@@ -281,7 +359,7 @@ func (s *AuthService) Logout(ctx context.Context, req *authv1.LogoutRequest) (*e
 // GetMe returns the current authenticated user's information
 func (s *AuthService) GetMe(ctx context.Context, _ *emptypb.Empty) (*authv1.GetMeResponse, error) {
 	// Get user ID from context (set by auth interceptor)
-	userID, ok := ctx.Value("user_id").(string)
+	userID, ok := middleware.GetUserIDFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
 	}
@@ -295,15 +373,37 @@ func (s *AuthService) GetMe(ctx context.Context, _ *emptypb.Empty) (*authv1.GetM
 		return nil, status.Error(codes.Internal, "failed to get user")
 	}
 
-	return &authv1.GetMeResponse{
+	// Get email verification status
+	verificationStatus, err := s.emailVerificationService.GetVerificationStatus(ctx, userID)
+	if err != nil {
+		// Log error but don't fail the request
+		log.Printf("Failed to get email verification status: %v", err)
+	}
+
+	response := &authv1.GetMeResponse{
 		User: s.convertUserToProto(foundUser),
-	}, nil
+	}
+
+	if verificationStatus != nil {
+		response.EmailVerificationStatus = &authv1.EmailVerificationStatus{
+			EmailVerified: verificationStatus.EmailVerified,
+			Attempts:      int32(verificationStatus.Attempts),
+			MaxAttempts:   int32(verificationStatus.MaxAttempts),
+			IsExpired:     verificationStatus.IsExpired,
+			CanResend:     verificationStatus.CanResend,
+		}
+		if verificationStatus.ExpiresAt != nil {
+			response.EmailVerificationStatus.ExpiresAt = timestamppb.New(*verificationStatus.ExpiresAt)
+		}
+	}
+
+	return response, nil
 }
 
 // UpdateProfile updates the current user's profile
 func (s *AuthService) UpdateProfile(ctx context.Context, req *authv1.UpdateProfileRequest) (*authv1.UpdateProfileResponse, error) {
 	// Get user ID from context
-	userID, ok := ctx.Value("user_id").(string)
+	userID, ok := middleware.GetUserIDFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
 	}
@@ -326,6 +426,11 @@ func (s *AuthService) UpdateProfile(ctx context.Context, req *authv1.UpdateProfi
 		update = update.SetPreferences(preferences)
 	}
 
+	// Phase 2: Update notification settings
+	update = update.
+		SetEmailNotificationsEnabled(req.EmailNotificationsEnabled).
+		SetSecurityNotificationsEnabled(req.SecurityNotificationsEnabled)
+
 	// Execute update
 	updatedUser, err := update.Save(ctx)
 	if err != nil {
@@ -343,7 +448,7 @@ func (s *AuthService) UpdateProfile(ctx context.Context, req *authv1.UpdateProfi
 // ChangePassword changes the current user's password
 func (s *AuthService) ChangePassword(ctx context.Context, req *authv1.ChangePasswordRequest) (*emptypb.Empty, error) {
 	// Get user ID from context
-	userID, ok := ctx.Value("user_id").(string)
+	userID, ok := middleware.GetUserIDFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
 	}
@@ -376,6 +481,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, req *authv1.ChangePass
 	// Update password and clear refresh token
 	_, err = foundUser.Update().
 		SetPasswordHash(hashedPassword).
+		SetPasswordChangedAt(time.Now()).
 		ClearRefreshToken().
 		ClearRefreshTokenExpiresAt().
 		Save(ctx)
@@ -384,40 +490,190 @@ func (s *AuthService) ChangePassword(ctx context.Context, req *authv1.ChangePass
 		return nil, status.Error(codes.Internal, "failed to update password")
 	}
 
+	// Log password change
+	if err := s.securityLogger.LogPasswordChanged(ctx, foundUser.ID); err != nil {
+		// Log error but don't fail
+	}
+
+	// Send notification email if requested
+	if req.NotifyViaEmail && foundUser.SecurityNotificationsEnabled {
+		// This would send an email notification about password change
+		// Implementation depends on email service
+	}
+
 	return &emptypb.Empty{}, nil
 }
 
-// VerifyEmail verifies a user's email address
-func (s *AuthService) VerifyEmail(ctx context.Context, req *authv1.VerifyEmailRequest) (*emptypb.Empty, error) {
-	// TODO: Implement email verification with token
-	// This would typically involve:
-	// 1. Generating a verification token when user registers
-	// 2. Sending an email with the token
-	// 3. Verifying the token here and updating email_verified field
+// Phase 2: Email Verification Methods
 
-	return nil, status.Error(codes.Unimplemented, "email verification not implemented")
+// SendVerificationEmail sends a verification email to the authenticated user
+func (s *AuthService) SendVerificationEmail(ctx context.Context, _ *authv1.SendVerificationEmailRequest) (*emptypb.Empty, error) {
+	// Get user ID from context
+	userID, ok := middleware.GetUserIDFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+
+	if err := s.emailVerificationService.SendVerificationEmail(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
 }
+
+// VerifyEmail verifies a user's email address using a token
+func (s *AuthService) VerifyEmail(ctx context.Context, req *authv1.VerifyEmailRequest) (*emptypb.Empty, error) {
+	if err := s.emailVerificationService.VerifyEmail(ctx, req.Token); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// ResendVerificationEmail resends the verification email
+func (s *AuthService) ResendVerificationEmail(ctx context.Context, _ *authv1.ResendVerificationEmailRequest) (*emptypb.Empty, error) {
+	// Get user ID from context
+	userID, ok := middleware.GetUserIDFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+
+	if err := s.emailVerificationService.ResendVerificationEmail(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// GetVerificationStatus returns the email verification status
+func (s *AuthService) GetVerificationStatus(ctx context.Context, _ *authv1.GetVerificationStatusRequest) (*authv1.GetVerificationStatusResponse, error) {
+	// Get user ID from context
+	userID, ok := middleware.GetUserIDFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+
+	status, err := s.emailVerificationService.GetVerificationStatus(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &authv1.GetVerificationStatusResponse{
+		Status: &authv1.EmailVerificationStatus{
+			EmailVerified: status.EmailVerified,
+			Attempts:      int32(status.Attempts),
+			MaxAttempts:   int32(status.MaxAttempts),
+			IsExpired:     status.IsExpired,
+			CanResend:     status.CanResend,
+		},
+	}
+
+	if status.ExpiresAt != nil {
+		response.Status.ExpiresAt = timestamppb.New(*status.ExpiresAt)
+	}
+
+	return response, nil
+}
+
+// Phase 2: Password Reset Methods
 
 // RequestPasswordReset initiates a password reset process
 func (s *AuthService) RequestPasswordReset(ctx context.Context, req *authv1.RequestPasswordResetRequest) (*emptypb.Empty, error) {
-	// TODO: Implement password reset request
-	// This would typically involve:
-	// 1. Finding user by email
-	// 2. Generating a reset token
-	// 3. Sending an email with the reset link
+	if err := s.passwordResetService.RequestPasswordReset(ctx, req.Email); err != nil {
+		// For security, we might want to return success even if the email doesn't exist
+		// to avoid revealing whether an email is registered
+		return &emptypb.Empty{}, nil
+	}
 
-	return nil, status.Error(codes.Unimplemented, "password reset request not implemented")
+	return &emptypb.Empty{}, nil
+}
+
+// VerifyPasswordResetToken verifies if a password reset token is valid
+func (s *AuthService) VerifyPasswordResetToken(ctx context.Context, req *authv1.VerifyPasswordResetTokenRequest) (*authv1.VerifyPasswordResetTokenResponse, error) {
+	tokenInfo, err := s.passwordResetService.VerifyPasswordResetToken(ctx, req.Token)
+	if err != nil {
+		return nil, err
+	}
+
+	response := &authv1.VerifyPasswordResetTokenResponse{
+		IsValid: tokenInfo.IsValid,
+		Email:   tokenInfo.Email,
+	}
+
+	if tokenInfo.ExpiresAt != nil {
+		response.ExpiresAt = timestamppb.New(*tokenInfo.ExpiresAt)
+	}
+
+	return response, nil
 }
 
 // ResetPassword resets a user's password using a reset token
 func (s *AuthService) ResetPassword(ctx context.Context, req *authv1.ResetPasswordRequest) (*emptypb.Empty, error) {
-	// TODO: Implement password reset
-	// This would typically involve:
-	// 1. Validating the reset token
-	// 2. Updating the user's password
-	// 3. Invalidating the reset token
+	if err := s.passwordResetService.ResetPassword(ctx, req.Token, req.NewPassword); err != nil {
+		return nil, err
+	}
 
-	return nil, status.Error(codes.Unimplemented, "password reset not implemented")
+	return &emptypb.Empty{}, nil
+}
+
+// Phase 2: Security Methods
+
+// GetSecurityEvents returns security events for the authenticated user
+func (s *AuthService) GetSecurityEvents(ctx context.Context, req *authv1.GetSecurityEventsRequest) (*authv1.GetSecurityEventsResponse, error) {
+	// Get user ID from context
+	//userID, ok := middleware.GetUserIDFromContext(ctx)
+	//if !ok {
+	//	return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	//}
+
+	//userUUID, err := uuid.Parse(userID)
+	//if err != nil {
+	//	return nil, status.Error(codes.InvalidArgument, "invalid user ID")
+	//}
+
+	// TODO: Implement security event retrieval
+	// This would query the SecurityEvent table for the user's events
+
+	return &authv1.GetSecurityEventsResponse{
+		Events:        []*authv1.SecurityEvent{},
+		NextPageToken: "",
+		TotalCount:    0,
+	}, nil
+}
+
+// UnlockAccount unlocks a user's account (admin only)
+func (s *AuthService) UnlockAccount(ctx context.Context, req *authv1.UnlockAccountRequest) (*emptypb.Empty, error) {
+	// Check if user is admin
+	userRole, ok := middleware.GetUserRoleFromContext(ctx)
+	if !ok || userRole != "admin" {
+		return nil, status.Error(codes.PermissionDenied, "admin access required")
+	}
+
+	userUUID, err := uuid.Parse(req.UserId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid user ID")
+	}
+
+	// Unlock the account
+	err = s.client.User.UpdateOneID(userUUID).
+		SetFailedLoginAttempts(0).
+		ClearAccountLockedUntil().
+		Exec(ctx)
+
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "failed to unlock account")
+	}
+
+	// Log the unlock event
+	if err := s.securityLogger.LogFromContext(ctx, userUUID, security.EventTypeAccountUnlocked,
+		"Account unlocked by admin", security.SeverityLow); err != nil {
+		// Log error but don't fail
+	}
+
+	return &emptypb.Empty{}, nil
 }
 
 // Helper functions
@@ -440,20 +696,31 @@ func (s *AuthService) validateRegisterRequest(req *authv1.RegisterRequest) error
 
 func (s *AuthService) convertUserToProto(u *ent.User) *authv1.User {
 	proto := &authv1.User{
-		Id:            u.ID.String(),
-		Email:         u.Email,
-		Username:      u.Username,
-		FirstName:     u.FirstName,
-		LastName:      u.LastName,
-		Role:          convertRoleToProto(u.Role),
-		IsActive:      u.IsActive,
-		EmailVerified: u.EmailVerified,
-		CreatedAt:     timestamppb.New(u.CreatedAt),
-		UpdatedAt:     timestamppb.New(u.UpdatedAt),
+		Id:                           u.ID.String(),
+		Email:                        u.Email,
+		Username:                     u.Username,
+		FirstName:                    u.FirstName,
+		LastName:                     u.LastName,
+		Role:                         convertRoleToProto(u.Role),
+		IsActive:                     u.IsActive,
+		EmailVerified:                u.EmailVerified,
+		EmailNotificationsEnabled:    u.EmailNotificationsEnabled,
+		SecurityNotificationsEnabled: u.SecurityNotificationsEnabled,
+		FailedLoginAttempts:          int32(u.FailedLoginAttempts),
+		CreatedAt:                    timestamppb.New(u.CreatedAt),
+		UpdatedAt:                    timestamppb.New(u.UpdatedAt),
 	}
 
 	if u.LastLogin != nil {
 		proto.LastLogin = timestamppb.New(*u.LastLogin)
+	}
+
+	if u.AccountLockedUntil != nil {
+		proto.AccountLockedUntil = timestamppb.New(*u.AccountLockedUntil)
+	}
+
+	if u.PasswordChangedAt != nil {
+		proto.PasswordChangedAt = timestamppb.New(*u.PasswordChangedAt)
 	}
 
 	return proto
