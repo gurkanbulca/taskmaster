@@ -15,7 +15,7 @@
       - taskmaster-network
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-taskmaster}" ]
-      interval: 10s
+      interval: 3s
       timeout: 5s
       retries: 5
 
@@ -35,6 +35,27 @@
       timeout: 5s
       retries: 5
 
+  backend:
+    container_name: taskmaster-backend
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+    environment:
+      # Pass environment variables from your .env file
+      - DB_HOST=postgres
+      - DB_PORT=${DB_PORT}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - GRPC_PORT=${GRPC_PORT}
+    ports:
+      - "${GRPC_PORT:-50051}:${GRPC_PORT:-50051}"
+    networks:
+      - taskmaster-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Envoy Proxy for gRPC-Web
   envoy:
     image: envoyproxy/envoy:v1.27-latest
@@ -47,8 +68,12 @@
     command: [ "/usr/local/bin/envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
     networks:
       - taskmaster-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # For accessing host machine on Windows/Mac
+    # *** FIX: Added depends_on condition for the backend service ***
+    depends_on:
+      backend:
+        # This ensures Envoy only starts after the backend is healthy.
+        # Note: This relies on the HEALTHCHECK in your backend's Dockerfile.
+        condition: service_healthy
 
 networks:
   taskmaster-network:

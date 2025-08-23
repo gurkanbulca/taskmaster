@@ -129,16 +129,15 @@ func main() {
 	validationInterceptor := middleware.NewEnhancedValidationInterceptor(cfg.ToValidationConfig())
 
 	// Create gRPC server with interceptors
-	// Note: Order matters! Metadata extraction should come first
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
-			metadataExtractor.Unary(), // Extract IP/User-Agent first
+			metadataExtractor.Unary(),
 			validationInterceptor.Unary(),
 			authInterceptor.Unary(),
 			loggingInterceptor,
 		),
 		grpc.ChainStreamInterceptor(
-			metadataExtractor.Stream(), // Extract IP/User-Agent first
+			metadataExtractor.Stream(),
 			validationInterceptor.Stream(),
 			authInterceptor.Stream(),
 		),
@@ -151,7 +150,10 @@ func main() {
 	// Register health check
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
-	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	// Set the health status for all services
+	healthServer.SetServingStatus("auth.v1.AuthService", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("task.v1.TaskService", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING) // For overall health
 
 	// Register reflection for development
 	if cfg.Server.EnableReflection {
@@ -171,38 +173,6 @@ func main() {
 	// Start server in goroutine
 	go func() {
 		log.Printf("🚀 TaskMaster gRPC server listening on port %s", cfg.Server.GRPCPort)
-		log.Printf("📍 Environment: %s", cfg.Server.Environment)
-		log.Println("")
-		log.Println("📡 Services available:")
-		log.Println("   • AuthService (authentication & user management)")
-		log.Println("   • TaskService (task management)")
-		log.Println("   • Health (health checks)")
-		log.Println("")
-		log.Println("🔧 Phase 2 Features:")
-		log.Println("   • Email verification system")
-		log.Println("   • Password reset functionality")
-		log.Println("   • Security event logging")
-		log.Println("   • Enhanced validation")
-		log.Println("")
-		log.Println("🔐 Security Configuration:")
-		log.Printf("   • Max login attempts: %d", cfg.Security.MaxLoginAttempts)
-		log.Printf("   • Account lockout duration: %v", cfg.Security.AccountLockoutDuration)
-		log.Printf("   • Password reset rate limit: %v", cfg.Security.PasswordResetRateLimit)
-		log.Printf("   • Email verification required: %v", cfg.Security.RequireEmailVerification)
-		log.Printf("   • Security notifications: %v", cfg.Security.EnableSecurityNotifications)
-		log.Println("")
-		log.Println("🧪 Test commands:")
-		log.Printf("   grpcurl -plaintext localhost:%s list", cfg.Server.GRPCPort)
-		log.Printf("   grpcurl -plaintext localhost:%s describe auth.v1.AuthService", cfg.Server.GRPCPort)
-		log.Printf("   grpcurl -plaintext localhost:%s describe task.v1.TaskService", cfg.Server.GRPCPort)
-		log.Println("")
-
-		if cfg.Email.TestingMode {
-			log.Println("📧 Email service: Mock (emails will be logged, not sent)")
-		} else {
-			log.Printf("📧 Email service: SMTP (%s)", cfg.Email.SMTPHost)
-		}
-
 		if err := grpcServer.Serve(listener); err != nil {
 			log.Fatalf("Failed to serve: %v", err)
 		}
@@ -214,30 +184,13 @@ func main() {
 	<-quit
 
 	log.Println("📴 Shutting down server...")
-
-	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		grpcServer.GracefulStop()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Println("✅ Server shutdown complete")
-	case <-ctx.Done():
-		grpcServer.Stop()
-		log.Println("⚠️  Server shutdown forced")
-	}
+	grpcServer.GracefulStop()
+	log.Println("✅ Server shutdown complete")
 }
 
 // runAutoMigration runs the auto migration
 func runAutoMigration(ctx context.Context, client *ent.Client) error {
 	log.Println("🔄 Running auto migration...")
-
 	err := client.Schema.Create(
 		ctx,
 		migrate.WithDropIndex(true),
@@ -247,66 +200,45 @@ func runAutoMigration(ctx context.Context, client *ent.Client) error {
 	if err != nil {
 		return fmt.Errorf("run auto migration: %w", err)
 	}
-
 	log.Println("✅ Auto migration completed")
 	return nil
 }
 
 // startCleanupJob starts background cleanup jobs
 func startCleanupJob(ctx context.Context, emailVerificationService *service.EmailVerificationService, passwordResetService *service.PasswordResetService) {
-	ticker := time.NewTicker(1 * time.Hour) // Run cleanup every hour
+	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
-
 	log.Println("🧹 Starting background cleanup job (runs every hour)")
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Cleanup expired email verification tokens
 			if err := emailVerificationService.CleanupExpiredTokens(ctx); err != nil {
 				log.Printf("Failed to cleanup expired email verification tokens: %v", err)
 			}
-
-			// Cleanup expired password reset tokens
 			if err := passwordResetService.CleanupExpiredTokens(ctx); err != nil {
 				log.Printf("Failed to cleanup expired password reset tokens: %v", err)
 			}
-
 			log.Println("🧹 Token cleanup completed")
 		}
 	}
 }
 
-// Enhanced logging interceptor with client information
+// loggingInterceptor logs incoming requests
 func loggingInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	start := time.Now()
-
-	// Get client info from context
 	clientInfo := middleware.GetClientInfoFromContext(ctx)
-
-	// Call the handler
 	resp, err := handler(ctx, req)
-
-	// Log the call with client information
 	duration := time.Since(start)
 	logLevel := "INFO"
 	if err != nil {
 		logLevel = "ERROR"
 	}
-
-	if clientInfo.UserID != "" {
-		log.Printf("[%s] %s completed in %v (user: %s, ip: %s)",
-			logLevel, info.FullMethod, duration, clientInfo.UserID, clientInfo.IPAddress)
-	} else {
-		log.Printf("[%s] %s completed in %v (ip: %s)",
-			logLevel, info.FullMethod, duration, clientInfo.IPAddress)
-	}
-
+	log.Printf("[%s] %s completed in %v (user: %s, ip: %s)",
+		logLevel, info.FullMethod, duration, clientInfo.UserID, clientInfo.IPAddress)
 	if err != nil {
 		log.Printf("[ERROR] %s error: %v", info.FullMethod, err)
 	}
-
 	return resp, err
 }

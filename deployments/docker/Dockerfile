@@ -45,7 +45,7 @@ EXPOSE 50051
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD nc -z localhost 50051 || exit 1
+    CMD nc -z 127.0.0.1 50051 || exit 1
 
 # Command to run the application
 CMD ["./server"]
