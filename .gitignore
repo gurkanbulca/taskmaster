@@ -100,3 +100,8 @@ secrets/
 *.bak
 *.backup
 .cache/
+# Proto generated files
+api/proto/*/v1/generated/
+
+# Proto submodule generated files
+proto/gen/

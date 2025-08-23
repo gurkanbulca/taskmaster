@@ -1,0 +1,2 @@
+// Add this to go.mod for local proto development
+replace github.com/gurkanbulca/taskmaster-proto => ./proto
