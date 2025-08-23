@@ -1,32 +1,58 @@
-﻿version: '3.8'
-
-services:
+﻿services:
+  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
+    container_name: taskmaster-db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: taskmaster
+      POSTGRES_USER: ${DB_USER:-taskmaster}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-taskmaster_password}
+      POSTGRES_DB: ${DB_NAME:-taskmaster_db}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - taskmaster-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-taskmaster}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # Redis Cache
   redis:
     image: redis:7-alpine
+    container_name: taskmaster-redis
     ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - taskmaster-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  jaeger:
-    image: jaegertracing/all-in-one:latest
+  # Envoy Proxy for gRPC-Web
+  envoy:
+    image: envoyproxy/envoy:v1.27-latest
+    container_name: taskmaster-envoy
     ports:
-      - "16686:16686"
-      - "14268:14268"
-    environment:
-      COLLECTOR_OTLP_ENABLED: true
+      - "${ENVOY_PORT:-8080}:8080"     # gRPC-Web port
+      - "${ENVOY_ADMIN_PORT:-9901}:9901" # Admin interface
+    volumes:
+      - ./deployments/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    command: [ "/usr/local/bin/envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
+    networks:
+      - taskmaster-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # For accessing host machine on Windows/Mac
+
+networks:
+  taskmaster-network:
+    driver: bridge
 
 volumes:
   postgres_data:
