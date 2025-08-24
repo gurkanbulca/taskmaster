@@ -1,83 +1,32 @@
-﻿services:
-  # PostgreSQL Database
+﻿version: '3.8'
+
+services:
   postgres:
     image: postgres:15-alpine
-    container_name: taskmaster-db
     environment:
-      POSTGRES_USER: ${DB_USER:-taskmaster}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-taskmaster_password}
-      POSTGRES_DB: ${DB_NAME:-taskmaster_db}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: taskmaster
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - taskmaster-network
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-taskmaster}" ]
-      interval: 3s
-      timeout: 5s
-      retries: 5
 
-  # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: taskmaster-redis
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379:6379"
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    networks:
-      - taskmaster-network
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  backend:
-    container_name: taskmaster-backend
-    build:
-      context: .
-      dockerfile: deployments/docker/Dockerfile
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
     environment:
-      # Pass environment variables from your .env file
-      - DB_HOST=postgres
-      - DB_PORT=${DB_PORT}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
-      - GRPC_PORT=${GRPC_PORT}
-    ports:
-      - "${GRPC_PORT:-50051}:${GRPC_PORT:-50051}"
-    networks:
-      - taskmaster-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  # Envoy Proxy for gRPC-Web
-  envoy:
-    image: envoyproxy/envoy:v1.27-latest
-    container_name: taskmaster-envoy
-    ports:
-      - "${ENVOY_PORT:-8080}:8080"     # gRPC-Web port
-      - "${ENVOY_ADMIN_PORT:-9901}:9901" # Admin interface
-    volumes:
-      - ./deployments/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    command: [ "/usr/local/bin/envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
-    networks:
-      - taskmaster-network
-    # *** FIX: Added depends_on condition for the backend service ***
-    depends_on:
-      backend:
-        # This ensures Envoy only starts after the backend is healthy.
-        # Note: This relies on the HEALTHCHECK in your backend's Dockerfile.
-        condition: service_healthy
-
-networks:
-  taskmaster-network:
-    driver: bridge
+      COLLECTOR_OTLP_ENABLED: true
 
 volumes:
   postgres_data:
